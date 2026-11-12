@@ -339,18 +339,17 @@ export class Renderer {
     ctx.globalAlpha *= alpha;
     ctx.translate(head.x, head.y);
     ctx.rotate(angle);
-    this.headPath(cell, w);
+    this.headPath(cell);
     ctx.fillStyle = color;
     ctx.fill();
     ctx.restore();
   }
 
   /**
-   * Arrow head in local space (pointing +x): the back edge flares out of the
-   * line width and sweeps backwards, so the head grows out of the body instead
-   * of looking like a triangle glued on.
+   * Arrow head in local space (pointing +x): a slim rounded triangle whose base
+   * overlaps the round line cap, so the head reads as part of the stroke.
    */
-  private headPath(cell: number, w: number): void {
+  private headPath(cell: number): void {
     const ctx = this.ctx;
     const tip = cell * 0.64;
     const base = -cell * 0.21;
@@ -517,7 +516,7 @@ export class Renderer {
       const angle = Math.atan2(v.y, v.x);
       ctx.translate(hx, hy);
       ctx.rotate(angle);
-      this.headPath(cell, w);
+      this.headPath(cell);
       ctx.fill();
       ctx.restore();
     }
