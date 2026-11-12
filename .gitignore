@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+library/
+temp/
+local/
+profiles/
+.tmp/
+web/main.js
+web/assetlab.js
+.DS_Store
+*.log

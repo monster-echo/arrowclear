@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no"
+    />
+    <meta name="theme-color" content="#CFEFF7" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>一箭清空 · Arrow Clear</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="board"></canvas>
+
+      <header id="hud" class="hud is-hidden">
+        <div class="hud-row">
+          <button class="icon-btn" id="btn-pause" aria-label="暂停">
+            <span data-icon="pause"></span>
+          </button>
+          <div class="hud-center">
+            <div class="level-title" id="hud-level">第 1 关</div>
+            <div class="hud-sub">
+              <div class="hearts" id="hud-hearts"></div>
+              <div class="timer" id="hud-timer">
+                <span data-icon="clock"></span><b>02:00</b>
+              </div>
+            </div>
+          </div>
+          <div class="coin-pill" id="hud-coins">
+            <span data-icon="coin"></span><b>0</b>
+          </div>
+        </div>
+        <div class="progress"><i id="hud-progress"></i></div>
+      </header>
+
+      <footer id="toolbar" class="toolbar is-hidden">
+        <button class="tool" id="btn-hint">
+          <span class="tool-ico" data-icon="bulb"></span>
+          <span class="tool-label">提示</span>
+          <span class="tool-badge" id="hint-cost">30</span>
+        </button>
+        <button class="tool" id="btn-sound">
+          <span class="tool-ico" data-icon="sound"></span>
+          <span class="tool-label">音效</span>
+        </button>
+        <button class="tool" id="btn-restart">
+          <span class="tool-ico" data-icon="restart"></span>
+          <span class="tool-label">重来</span>
+        </button>
+      </footer>
+
+      <section id="home" class="screen home">
+        <div class="top-row">
+          <button class="icon-btn glass" id="btn-home-settings" aria-label="设置">
+            <span data-icon="gear"></span>
+          </button>
+          <button class="coin-pill glass" id="btn-home-coins">
+            <span data-icon="coin"></span><b id="home-coins">0</b>
+            <span class="plus">+</span>
+          </button>
+        </div>
+
+        <div class="brand">
+          <div class="logo" id="logo" role="img" aria-label="一箭清空"></div>
+          <div class="logo-sub">ARROW&nbsp;CLEAR</div>
+        </div>
+
+        <div class="mascot" id="mascot" aria-hidden="true"></div>
+
+        <div class="play-wrap">
+          <div class="level-chip" id="home-level-chip">第 1 关</div>
+          <button class="btn btn-play" id="btn-play">
+            <span class="play-tri" data-icon="play"></span>
+            <span>开始游戏</span>
+          </button>
+          <div class="home-hint" id="home-hint">点击箭头发射，清空整块棋盘</div>
+        </div>
+
+        <nav class="home-nav">
+          <button class="nav-btn" id="btn-nav-levels">
+            <span class="nav-ico" data-icon="levels"></span><span>关卡</span>
+          </button>
+          <button class="nav-btn" id="btn-nav-shop">
+            <span class="nav-ico" data-icon="shop"></span><span>商店</span>
+          </button>
+          <button class="nav-btn" id="btn-nav-howto">
+            <span class="nav-ico" data-icon="help"></span><span>玩法</span>
+          </button>
+        </nav>
+
+        <div class="version">v0.1.0 · made with Cocos Creator</div>
+      </section>
+
+      <section id="levels" class="screen levels is-hidden">
+        <div class="sheet-head">
+          <button class="icon-btn glass" id="btn-levels-back" aria-label="返回">
+            <span data-icon="back"></span>
+          </button>
+          <h2>选择关卡</h2>
+          <div class="star-total"><span data-icon="star"></span><b id="total-stars">0</b></div>
+        </div>
+        <div class="level-grid" id="level-grid"></div>
+      </section>
+
+      <div id="overlay" class="overlay is-hidden"></div>
+      <div id="toast" class="toast"></div>
+      <div id="combo" class="combo"></div>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

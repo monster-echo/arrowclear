@@ -1,0 +1,22 @@
+{
+  "name": "arrow-clear",
+  "uuid": "b7f2d1c4-6a3e-4f80-9c2b-8d5e1a7f3c60",
+  "version": "3.8.6",
+  "creator": {
+    "version": "3.8.6"
+  },
+  "description": "Arrow Clear - a satisfying arrow unblocking puzzle",
+  "scripts": {
+    "web": "node web/build.mjs --serve",
+    "build:web": "node web/build.mjs",
+    "check": "tsc -p tsconfig.web.json --noEmit",
+    "check:cocos": "tsc -p tsconfig.cocos.json",
+    "test:levels": "esbuild tools/check-levels.ts --bundle --platform=node --format=esm --outfile=.tmp/check.mjs --log-level=warning && node .tmp/check.mjs",
+    "assets": "python3 tools/gen_assets.py && node tools/render-assets.mjs && python3 tools/subset_font.py"
+  },
+  "devDependencies": {
+    "@cocos/creator-types": "^3.8.6",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}
