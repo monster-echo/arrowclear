@@ -3,7 +3,7 @@ import { icon } from './icons';
 
 const ICONS = [
   'gear','coin','heart','clock','bulb','restart','pause','play',
-  'sound','soundOff','back','lock','star','starEmpty','levels','shop','help','close',
+  'sound','sound-off','back','lock','star','star-empty','levels','shop','help','close',
 ];
 
 const stage = document.getElementById('stage')!;

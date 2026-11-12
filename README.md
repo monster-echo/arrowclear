@@ -54,9 +54,18 @@ npm run build:web    # 输出 dist/web
 ### 3. 校验
 
 ```bash
-npm run check          # Web + 内核 TypeScript 类型检查
-npm run test:levels    # 60 关全部生成并验证可解
-npx tsc -p tsconfig.cocos.json   # Cocos 脚本按官方引擎类型检查
+npm test               # 类型检查 + 3 套测试（1163 项断言，约 90 秒）
+```
+
+单独运行：
+
+```bash
+npm run check            # Web + 核心 TypeScript
+npm run check:cocos      # Cocos 脚本按官方引擎类型检查
+npm run test:core        # 核心规则单测（1092 项）
+npm run test:e2e         # 真实 Chrome 端到端（25 项）
+npm run test:project     # Cocos 工程静态校验（46 项）
+npm run test:levels      # 60 关生成 + 可解性校验
 ```
 
 ---
@@ -107,17 +116,21 @@ Cocos 工程直接 import 同一个目录。改一处，两端同时生效。
 | iOS / App Store | [docs/02-发布-iOS.md](docs/02-发布-iOS.md) | Apple Developer $99/年、Xcode、隐私政策 |
 | Google Play | [docs/03-发布-Android.md](docs/03-发布-Android.md) | Play 开发者账号、签名 keystore、AAB |
 | 微信小游戏 | [docs/04-发布-微信小游戏.md](docs/04-发布-微信小游戏.md) | 企业主体、游戏版号 / 备案、微信开发者工具 |
+| 测试报告 | [docs/07-测试报告.md](docs/07-测试报告.md) | 1163 项断言、性能数据、未覆盖项与风险 |
 
 ---
 
-## 当前验证范围（重要）
+## 测试与验证范围
 
-- Web 预览版已在本机用真实浏览器跑通：首屏、关卡、点击飞出、撞墙扣心、提示、胜负结算、存档、关卡选择。
-- 60 关全部通过「可解性」自动校验；不同种子生成统计见 `npm run test:levels`。
-- Cocos 工程按 3.8.6 序列化格式生成，并用官方 `@cocos/creator-types@3.8.6` 做了**类型层校验**；
-  本机没有安装 Cocos Creator，因此没有实际点开编辑器/真机构建。
-  第一次打开请按 `docs/01` 的 3 分钟检查清单过一遍（场景、竖屏、设计分辨率）。
-- 广告、内购、云端存档目前是**接口占位**（`Platform.ts` / `showShop()`），接真实 SDK 时替换即可。
+`npm test` 全绿：**1163 项断言，0 失败**。明细见 [docs/07-测试报告.md](docs/07-测试报告.md)。
+
+- **核心规则**（1092 项）：60 关完整性/可解性、单调性随机顺序 60 局、250 关随机规格压力测试、配色、性能。
+- **浏览器 E2E**（25 项）：真实 Chrome 跑完首页→对局→提示→暂停→胜负→存档→关卡选择→5 档屏幕→5 关连打；
+  实测 60fps、点击响应 2ms、FCP 44ms、0 控制台错误。
+- **Cocos 工程静态校验**（46 项）：场景图引用、脚本 UUID 联动、资源路径与文件头、核心零引擎依赖、构建产物无外链。
+
+**仍未覆盖**：Cocos 编辑器实际导入/构建、iOS/Android/微信真机、广告与内购（接口占位）。
+本机没有安装 Cocos Creator，第一次打开请按 `docs/01` 的 3 分钟检查清单过一遍（场景、竖屏、设计分辨率）。
 
 ---
 

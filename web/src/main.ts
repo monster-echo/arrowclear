@@ -55,6 +55,7 @@ class Game {
   private lastFrame = 0;
   private screen: 'home' | 'game' | 'levels' = 'home';
   private tutorialShown = false;
+  private timers: number[] = [];
 
   constructor() {
     this.sfx.setEnabled(this.save.sound);
@@ -68,6 +69,7 @@ class Game {
   // ---------------------------------------------------------------- screens
 
   private showHome(): void {
+    this.clearTimers();
     this.screen = 'home';
     this.running = false;
     this.renderer.clear();
@@ -86,6 +88,7 @@ class Game {
   }
 
   private showLevels(): void {
+    this.clearTimers();
     this.screen = 'levels';
     $('#home').classList.add('is-hidden');
     $('#levels').classList.remove('is-hidden');
@@ -121,7 +124,18 @@ class Game {
     }
   }
 
+  /** Schedule a UI callback that is cancelled when the screen changes. */
+  private later(fn: () => void, ms: number): void {
+    this.timers.push(window.setTimeout(fn, ms));
+  }
+
+  private clearTimers(): void {
+    for (const t of this.timers) clearTimeout(t);
+    this.timers = [];
+  }
+
   private startLevel(id: number): void {
+    this.clearTimers();
     const level = getLevel(id);
     this.level = level;
     this.alive = new Set(level.arrows.map((a) => a.id));
@@ -154,7 +168,7 @@ class Game {
     if (!this.save.seenHowto) {
       this.save.seenHowto = true;
       persist(this.save);
-      setTimeout(() => this.showHowto(true), 420);
+      this.later(() => this.showHowto(true), 420);
     }
   }
 
@@ -367,7 +381,7 @@ class Game {
     this.updateHud(true);
 
     const isLast = id >= LEVEL_COUNT;
-    setTimeout(() => {
+    this.later(() => {
       this.showOverlay(`
         <div class="modal">
           <h3>${isLast ? '全部通关！' : '通关啦'}</h3>
@@ -407,7 +421,7 @@ class Game {
       reason === 'time'
         ? '别急，先看清楚每一支箭的出口'
         : '每一次撞墙都会失去一颗爱心';
-    setTimeout(() => {
+    this.later(() => {
       this.showOverlay(`
         <div class="modal">
           <h3>${title}</h3>

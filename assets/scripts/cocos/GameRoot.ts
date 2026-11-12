@@ -510,7 +510,7 @@ export class GameRoot extends Component {
 
       const stars = this.save.stars[i] ?? 0;
       for (let s = 0; s < 3; s++) {
-        const frame = Assets.frame(s < stars ? 'star' : 'starEmpty');
+        const frame = Assets.frame(s < stars ? 'star' : 'star-empty');
         if (!frame) continue;
         const sp = makeSprite(b.node, frame, 16, 16);
         sp.node.setPosition(-20 + s * 20, -32, 0);
@@ -607,6 +607,7 @@ export class GameRoot extends Component {
   // ---------------------------------------------------------------- navigation
 
   private showHome(): void {
+    this.unscheduleAllCallbacks();
     this.running = false;
     this.paused = false;
     this.closeModal();
@@ -622,6 +623,7 @@ export class GameRoot extends Component {
   }
 
   private showLevels(): void {
+    this.unscheduleAllCallbacks();
     this.closeModal();
     this.running = false;
     if (this.board) this.board.inputEnabled = false;
@@ -633,6 +635,7 @@ export class GameRoot extends Component {
   }
 
   private startLevel(id: number, fromUI = false): void {
+    this.unscheduleAllCallbacks();
     const level = getLevel(id);
     this.level = level;
     this.hearts = 3;
@@ -935,7 +938,7 @@ export class GameRoot extends Component {
 
     if (opts.stars !== undefined) {
       for (let i = 0; i < 3; i++) {
-        const frame = Assets.frame(i < opts.stars ? 'star' : 'starEmpty');
+        const frame = Assets.frame(i < opts.stars ? 'star' : 'star-empty');
         if (!frame) continue;
         const sp = makeSprite(panel, frame, 104, 104);
         sp.node.setPosition((i - 1) * 120, y - 48, 0);
