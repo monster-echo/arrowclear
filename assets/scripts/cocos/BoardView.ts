@@ -210,55 +210,50 @@ export class BoardView extends Component {
     for (let i = pts.length - 2; i >= 0; i--) g.lineTo(pts[i].x, pts[i].y);
     g.stroke();
 
-    // arrow head (rounded triangle)
+    // candy gloss
+    g.strokeColor = new Color(255, 255, 255, 51);
+    g.lineWidth = w * 0.34;
+    g.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y - w * 0.17);
+    for (let i = pts.length - 2; i >= 0; i--) g.lineTo(pts[i].x, pts[i].y - w * 0.17);
+    g.stroke();
+
+    // Arrow head: rounded triangle sitting on the straight run.
     const head = pts[0];
-    const len = this.cell * 0.4;
-    const half = this.cell * 0.33;
-    const cx = head.x + d.x * this.cell * 0.2;
-    const cy = head.y + d.y * this.cell * 0.2;
     const angle = Math.atan2(d.y, d.x);
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    const baseX = cx - cos * this.cell * 0.32;
-    const baseY = cy - sin * this.cell * 0.32;
-    const tipX = cx + cos * len;
-    const tipY = cy + sin * len;
-    const p1x = baseX - sin * half;
-    const p1y = baseY + cos * half;
-    const p2x = baseX + sin * half;
-    const p2y = baseY - cos * half;
-    this.roundedTriangle(g, tipX, tipY, p1x, p1y, p2x, p2y, this.cell * 0.09);
+    const tip = this.cell * 0.64;
+    const base = -this.cell * 0.21;
+    const half = this.cell * 0.3;
+    const map = (x: number, y: number) => ({
+      x: head.x + x * cos - y * sin,
+      y: head.y + x * sin + y * cos,
+    });
+    const headPts = [map(tip, 0), map(base, -half), map(base, half)];
+    this.roundedPolygon(g, headPts, [this.cell * 0.05, this.cell * 0.07, this.cell * 0.07]);
     g.fill();
   }
 
-  private roundedTriangle(
+  private roundedPolygon(
     g: Graphics,
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    x3: number,
-    y3: number,
-    r: number,
+    pts: { x: number; y: number }[],
+    radii: number[],
   ): void {
-    const pts = [
-      { x: x1, y: y1 },
-      { x: x2, y: y2 },
-      { x: x3, y: y3 },
-    ];
-    const near = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const n = pts.length;
+    const near = (a: { x: number; y: number }, b: { x: number; y: number }, r: number) => {
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const len = Math.hypot(dx, dy) || 1;
       const t = Math.min(0.45, r / len);
       return { x: a.x + dx * t, y: a.y + dy * t };
     };
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < n; i++) {
       const cur = pts[i];
-      const prev = pts[(i + 2) % 3];
-      const next = pts[(i + 1) % 3];
-      const a = near(cur, prev);
-      const b = near(cur, next);
+      const prev = pts[(i + n - 1) % n];
+      const next = pts[(i + 1) % n];
+      const r = radii[i] ?? 4;
+      const a = near(cur, prev, r);
+      const b = near(cur, next, r);
       if (i === 0) g.moveTo(a.x, a.y);
       else g.lineTo(a.x, a.y);
       g.quadraticCurveTo(cur.x, cur.y, b.x, b.y);

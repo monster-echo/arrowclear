@@ -327,33 +327,53 @@ export class Renderer {
     }
   }
 
-  private drawHead(arrow: Arrow, color: string, alpha = 1, offset = 0): void {
+  private drawHead(arrow: Arrow, color: string, alpha = 1): void {
     const ctx = this.ctx;
     const cell = this.layout.cell;
     const head = this.cellCenter(arrow.cells[0]);
     const v = DIR_VECTORS[arrow.dir];
     const angle = Math.atan2(v.y, v.x);
-    const cx = head.x + v.x * (cell * 0.2 + offset);
-    const cy = head.y + v.y * (cell * 0.2 + offset);
-    const len = cell * 0.4;
-    const half = cell * 0.33;
-    const r = cell * 0.09;
-    const baseX = -cell * 0.32;
+    const w = Math.max(7, cell * 0.41);
 
     ctx.save();
     ctx.globalAlpha *= alpha;
-    ctx.translate(cx, cy);
+    ctx.translate(head.x, head.y);
     ctx.rotate(angle);
+    this.headPath(cell, w);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * Arrow head in local space (pointing +x): the back edge flares out of the
+   * line width and sweeps backwards, so the head grows out of the body instead
+   * of looking like a triangle glued on.
+   */
+  private headPath(cell: number, w: number): void {
+    const ctx = this.ctx;
+    const tip = cell * 0.64;
+    const base = -cell * 0.21;
+    const half = cell * 0.3;
+    this.roundPoly(
+      [
+        [tip, 0],
+        [base, -half],
+        [base, half],
+      ],
+      [cell * 0.05, cell * 0.07, cell * 0.07],
+    );
+  }
+
+  private roundPoly(pts: [number, number][], radii: number[]): void {
+    const ctx = this.ctx;
+    const n = pts.length;
     ctx.beginPath();
-    const pts: [number, number][] = [
-      [len, 0],
-      [baseX, -half],
-      [baseX, half],
-    ];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < n; i++) {
       const cur = pts[i];
-      const prev = pts[(i + 2) % 3];
-      const next = pts[(i + 1) % 3];
+      const prev = pts[(i + n - 1) % n];
+      const next = pts[(i + 1) % n];
+      const r = radii[i] ?? 4;
       const p1 = this.towards(cur, prev, r);
       const p2 = this.towards(cur, next, r);
       if (i === 0) ctx.moveTo(p1[0], p1[1]);
@@ -361,9 +381,6 @@ export class Renderer {
       ctx.quadraticCurveTo(cur[0], cur[1], p2[0], p2[1]);
     }
     ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.restore();
   }
 
   private towards(a: [number, number], b: [number, number], dist: number): [number, number] {
@@ -415,14 +432,6 @@ export class Renderer {
       ctx.stroke();
     }
 
-    // soft drop shadow
-    ctx.strokeStyle = 'rgba(16,64,96,0.12)';
-    ctx.lineWidth = w;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    this.tracePath(arrow, 0, cell * 0.075);
-    ctx.stroke();
-
     // body
     ctx.strokeStyle = color;
     ctx.lineWidth = w;
@@ -430,9 +439,9 @@ export class Renderer {
     ctx.stroke();
 
     // candy gloss
-    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-    ctx.lineWidth = w * 0.36;
-    this.tracePath(arrow, 0, -w * 0.16);
+    ctx.strokeStyle = 'rgba(255,255,255,0.20)';
+    ctx.lineWidth = w * 0.34;
+    this.tracePath(arrow, 0, -w * 0.17);
     ctx.stroke();
 
     this.drawHead(arrow, color);
@@ -503,16 +512,12 @@ export class Renderer {
       ctx.stroke();
       ctx.fillStyle = f.color;
       const head = this.cellCenter(f.arrow.cells[0]);
-      const hx = head.x + v.x * (dist + cell * 0.2);
-      const hy = head.y + v.y * (dist + cell * 0.2);
+      const hx = head.x + v.x * dist;
+      const hy = head.y + v.y * dist;
       const angle = Math.atan2(v.y, v.x);
       ctx.translate(hx, hy);
       ctx.rotate(angle);
-      ctx.beginPath();
-      ctx.moveTo(cell * 0.4, 0);
-      ctx.lineTo(-cell * 0.32, -cell * 0.33);
-      ctx.lineTo(-cell * 0.32, cell * 0.33);
-      ctx.closePath();
+      this.headPath(cell, w);
       ctx.fill();
       ctx.restore();
     }

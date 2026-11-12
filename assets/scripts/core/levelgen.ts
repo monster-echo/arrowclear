@@ -88,9 +88,14 @@ class Builder {
     while (path.length < length) {
       const candidates: Dir[] = [];
       const weights: number[] = [];
-      const dirs: Dir[] = [last, ((last + 1) % 4) as Dir, ((last + 3) % 4) as Dir];
-      const w = [0.62, 0.19, 0.19];
-      for (let i = 0; i < 3; i++) {
+      // Force the first two steps to continue straight: the arrow head must sit
+      // at the end of a straight run, never right after a corner.
+      const forced = path.length <= 2;
+      const dirs: Dir[] = forced
+        ? [last]
+        : [last, ((last + 1) % 4) as Dir, ((last + 3) % 4) as Dir];
+      const w = forced ? [1] : [0.62, 0.19, 0.19];
+      for (let i = 0; i < dirs.length; i++) {
         const d = dirs[i];
         const v = DIR_VECTORS[d];
         const nx = cur.x + v.x;
@@ -168,6 +173,8 @@ class Builder {
 
       const length = rng.range(minLen, maxLen);
       const cells = this.buildPath(head, dir, length, rng);
+      // Head direction always equals the last segment, so even a 2-cell arrow
+      // points straight out of its stem.
       if (!cells) continue;
 
       let turns = 0;
@@ -204,7 +211,7 @@ class Builder {
       const dir = rng.int(4) as Dir;
       const corridor = this.corridorClear(head, dir);
       if (!corridor) continue;
-      const length = rng.range(2, Math.min(5, Math.max(3, maxLen)));
+      const length = rng.range(3, Math.min(5, Math.max(4, maxLen)));
       const cells = this.buildPath(head, dir, length, rng);
       if (!cells) continue;
       this.commit(cells, dir, corridor, 0);

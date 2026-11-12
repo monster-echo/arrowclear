@@ -18,11 +18,11 @@ export const C = {
   blue: hex('#3498EF'),
   blueDark: hex('#1E6FBE'),
   blueLight: hex('#78C4FB'),
-  yellow: hex('#FFC93C'),
+  yellow: hex('#FFCF59'),
   yellowDark: hex('#E0A20A'),
-  orange: hex('#FF9F43'),
+  orange: hex('#FFAF62'),
   green: hex('#48C46D'),
-  red: hex('#F2685F'),
+  red: hex('#F5837C'),
   purple: hex('#8B78F0'),
   panel: hex('#FFFFFF'),
   shade: hex('#0A2E48', 40),
@@ -31,15 +31,15 @@ export const C = {
 
 /** Same palette / order as web/src/theme.ts — keeps both builds consistent. */
 export const ARROW_COLORS: Color[] = [
-  hex('#F2685F'),
-  hex('#FF9F43'),
-  hex('#FFC93C'),
-  hex('#6ACB5B'),
-  hex('#2FBF9E'),
-  hex('#4AA8F0'),
-  hex('#7C6BF2'),
-  hex('#C46BE8'),
-  hex('#F26BA0'),
+  hex('#F5837C'),
+  hex('#FFAF62'),
+  hex('#FFCF59'),
+  hex('#77D06B'),
+  hex('#5CCBB1'),
+  hex('#57AFF2'),
+  hex('#8D7FF4'),
+  hex('#CD82EC'),
+  hex('#F488B2'),
 ];
 
 export const ARROW_NAMES = ['红', '橙', '黄', '绿', '青', '蓝', '靛', '紫', '粉'];

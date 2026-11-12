@@ -1,14 +1,14 @@
 /** Shared visual tokens. Mirrored 1:1 by the Cocos theme. */
 export const ARROW_COLORS = [
-  '#F2685F', // coral
-  '#FF9F43', // orange
-  '#FFC93C', // yellow
-  '#6ACB5B', // green
-  '#2FBF9E', // teal
-  '#4AA8F0', // blue
-  '#7C6BF2', // indigo
-  '#C46BE8', // purple
-  '#F26BA0', // pink
+  '#F5837C', // coral
+  '#FFAF62', // orange
+  '#FFCF59', // yellow
+  '#77D06B', // green
+  '#5CCBB1', // teal
+  '#57AFF2', // blue
+  '#8D7FF4', // indigo
+  '#CD82EC', // purple
+  '#F488B2', // pink
 ];
 
 export const ARROW_DARK = [
@@ -28,9 +28,9 @@ export const UI = {
   inkSoft: '#5D819B',
   blue: '#3498EF',
   blueDark: '#1E6FBE',
-  yellow: '#FFC93C',
+  yellow: '#FFCF59',
   green: '#48C46D',
-  red: '#F2685F',
+  red: '#F5837C',
   white: '#FFFFFF',
 };
 
