@@ -94,24 +94,6 @@ SCHEME="$(xcodebuild -list -json -project "$XCODEPROJ" \
 	| python3 -c 'import json,sys; print(json.load(sys.stdin)["project"]["schemes"][0])')"
 echo "scheme: $SCHEME"
 
-echo "== patch Info.plist"
-INFO_PLIST="$(find -L "$PROJ_DIR" -maxdepth 5 -name 'Info.plist' \
-	-not -path '*CMakeFiles*' -not -path '*Pods*' -not -path '*Tests*' -print | head -1)"
-if [[ -z "$INFO_PLIST" ]]; then
-	echo "No app Info.plist under $PROJ_DIR; candidates:" >&2
-	find -L "$PROJ_DIR" -name 'Info.plist' >&2
-	exit 1
-fi
-pb_set() {
-	/usr/libexec/PlistBuddy -c "Set :$1 $2" "$INFO_PLIST" 2>/dev/null \
-		|| /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$INFO_PLIST"
-}
-pb_set ITSAppUsesNonExemptEncryption false
-pb_set CFBundleDisplayName "$DISPLAY_NAME"
-pb_set CFBundleShortVersionString "$VERSION"
-pb_set CFBundleVersion "$BUILD"
-echo "Info.plist: $INFO_PLIST"
-
 if [[ "$STAGE" == "xcode" ]]; then
 	echo
 	echo "STAGE=xcode: Xcode project ready at $PROJ_DIR (no compile attempted)."
@@ -137,6 +119,11 @@ if [[ "$STAGE" == "sim" ]]; then
 	exit 0
 fi
 
+# Cocos 3.8 iOS projects are CMake-generated: there is no physical app
+# Info.plist in the project, it materialises inside the archive. Patch it
+# there — -exportArchive re-signs with the distribution identity afterwards,
+# so plist edits between archive and export are legitimate.
+
 echo "== archive (automatic signing + ASC API key)"
 SIGNING_ARGS=(
 	DEVELOPMENT_TEAM="$TEAM_ID"
@@ -156,6 +143,23 @@ xcodebuild -project "$XCODEPROJ" -scheme "$SCHEME" \
 	-archivePath "$ARCHIVE" \
 	"${SIGNING_ARGS[@]}" \
 	archive
+
+echo "== patch the archived Info.plist"
+APP_DIR="$(find "$ARCHIVE/Products" -maxdepth 3 -name '*.app' -type d -print -quit)"
+if [[ -z "$APP_DIR" ]]; then
+	echo "No .app inside $ARCHIVE/Products" >&2
+	exit 1
+fi
+INFO_PLIST="$APP_DIR/Info.plist"
+pb_set() {
+	/usr/libexec/PlistBuddy -c "Set :$1 $2" "$INFO_PLIST" 2>/dev/null \
+		|| /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$INFO_PLIST"
+}
+pb_set ITSAppUsesNonExemptEncryption false
+pb_set CFBundleDisplayName "$DISPLAY_NAME"
+pb_set CFBundleShortVersionString "$VERSION"
+pb_set CFBundleVersion "$BUILD"
+echo "Info.plist: $INFO_PLIST"
 
 echo "== export App Store IPA"
 cat > "$ROOT/export/ios/ExportOptions.plist" <<PLIST
@@ -213,4 +217,10 @@ echo
 echo "IPA: $FINAL (version $VERSION build $BUILD)"
 unzip -l "$FINAL" | grep -F 'PrivacyInfo.xcprivacy' >/dev/null \
 	&& echo "privacy manifest: present"
-codesign -dvv "$APP_BUNDLE" 2>/dev/null | grep -E 'Authority=|Identifier=' || true
+IDENT="$(codesign -dvv "$APP_BUNDLE" 2>/dev/null | sed -n 's/^Identifier=//p')"
+echo "bundle identifier: $IDENT"
+if [[ "$IDENT" != "$BUNDLE_ID" ]]; then
+	echo "Bundle id mismatch: built '$IDENT', expected '$BUNDLE_ID' \
+(check packages.ios.packageName in tools/build-config-ios.json)" >&2
+	exit 1
+fi

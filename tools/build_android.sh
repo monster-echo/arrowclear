@@ -51,12 +51,44 @@ if [[ -z "$CC_BIN" ]]; then
 	exit 1
 fi
 
+echo "== resolve Android SDK/NDK for Cocos"
+# The editor has no preferences on a fresh runner; build options carry the
+# paths instead. Resolve the newest installed NDK and write a resolved copy
+# of the build config into .tmp/ (gitignored — machine paths stay out of git).
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+ANDROID_NDK="${ANDROID_NDK:-$(find "$ANDROID_SDK/ndk" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)}"
+if [[ ! -d "$ANDROID_SDK" ]]; then
+	echo "Android SDK not found at $ANDROID_SDK (set ANDROID_HOME)" >&2
+	exit 1
+fi
+if [[ -z "$ANDROID_NDK" ]]; then
+	echo "No Android NDK under $ANDROID_SDK/ndk" >&2
+	exit 1
+fi
+echo "sdk: $ANDROID_SDK"
+echo "ndk: $ANDROID_NDK"
+RESOLVED="$ROOT/.tmp/build-config-android.json"
+mkdir -p "$ROOT/.tmp"
+python3 - "$ROOT/tools/build-config-android.json" "$RESOLVED" \
+	"$ANDROID_SDK" "$ANDROID_NDK" <<'PY'
+import json, os, sys
+src, dst, sdk, ndk = sys.argv[1:]
+with open(src) as f:
+    cfg = json.load(f)
+android = cfg.setdefault('packages', {}).setdefault('android', {})
+android['sdkPath'] = sdk
+android['ndkPath'] = ndk
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+with open(dst, 'w') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+PY
+
 echo "== Cocos CLI build -> Gradle project"
 rm -rf "$BUILD_DIR"
 # Exit code 36 is Cocos' documented CLI-build success; 32 invalid parameters,
 # 34 build error. One line only: a newline inside --build silently no-ops.
 set +e
-"$CC_BIN" --project "$ROOT" --build "configPath=$ROOT/tools/build-config-android.json"
+"$CC_BIN" --project "$ROOT" --build "configPath=$RESOLVED"
 rc=$?
 set -e
 if [[ $rc != 36 && $rc != 0 ]]; then
