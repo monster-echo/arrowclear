@@ -167,6 +167,20 @@ if [[ -z "$MAIN_MANIFEST" ]]; then
 	echo "app AndroidManifest.xml not found (NATIVE_DIR=$NATIVE_DIR)" >&2
 	exit 1
 fi
+# The template hardcodes versionCode/versionName in defaultConfig and
+# ignores AGP's android.injected.version.* properties — rewrite them in the
+# generated file (regenerated on every Cocos build, so idempotent).
+APP_GRADLE="$NATIVE_DIR/app/build.gradle"
+if [[ -f "$APP_GRADLE" ]]; then
+	sed -i.bak "s/versionCode [0-9]\+/versionCode $BUILD/" "$APP_GRADLE"
+	sed -i.bak "s/versionName \"[^\"]*\"/versionName \"$VERSION\"/" "$APP_GRADLE"
+	rm -f "$APP_GRADLE.bak"
+	echo "app/build.gradle: version $VERSION ($BUILD)"
+else
+	echo "app/build.gradle not found at $APP_GRADLE" >&2
+	exit 1
+fi
+
 if grep -q 'android:screenOrientation=' "$MAIN_MANIFEST"; then
 	# Cocos defaults to sensorLandscape; the game is portrait-only. Only the
 	# main activity is rewritten (dialog activities keep their own value).
@@ -202,7 +216,7 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 if [[ "$STAGE" == "debug" ]]; then
 	(cd "$PROJ_DIR" && "$GRADLE" assembleDebug --no-daemon)
-	APK="$(find "$PROJ_DIR" -path '*build/outputs/apk/debug*' -name '*.apk' -print -quit)"
+	APK="$(find "$PROJ_DIR" -path '*/outputs/apk/debug/*.apk' -print -quit)"
 	if [[ -z "$APK" ]]; then
 		echo "assembleDebug produced no APK" >&2
 		exit 1
@@ -223,7 +237,7 @@ fi
 	-Pandroid.injected.signing.key.alias="$KEYSTORE_USER" \
 	-Pandroid.injected.signing.key.password="$KEY_PASS")
 
-AAB="$(find "$PROJ_DIR" -path '*build/outputs/bundle/release*' -name '*.aab' -print -quit)"
+AAB="$(find "$PROJ_DIR" -path '*/outputs/bundle/release/*.aab' -print -quit)"
 if [[ -z "$AAB" ]]; then
 	echo "bundleRelease produced no AAB" >&2
 	exit 1
@@ -231,7 +245,7 @@ fi
 cp "$AAB" "$OUT_DIR/$APP_NAME-release.aab"
 
 echo "== verify versionCode"
-AAPT2="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT:-/nonexistent}" \
+AAPT2="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/nonexistent}}" \
 	-build-tools -name aapt2 -type f -print 2>/dev/null | sort -V | tail -1 || true)"
 if [[ -n "$AAPT2" ]]; then
 	CODE="$("$AAPT2" dump badging "$OUT_DIR/$APP_NAME-release.aab" 2>/dev/null \
