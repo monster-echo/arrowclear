@@ -17,6 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DIST = path.join(ROOT, 'dist', 'web');
 const ARTIFACTS = path.join(ROOT, 'tests', 'artifacts');
+await mkdir(ARTIFACTS, { recursive: true }); // artifacts are gitignored; create on fresh checkouts
 const CHROME =
   process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 

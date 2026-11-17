@@ -12,5 +12,9 @@
     }
   ],
   "startScene": "3d2b8c10-6f4a-4e59-8b71-2c9a5d0e4f86",
-  "packages": {}
+  "packages": {
+    "ios": {
+      "packageName": "tech.zhongbei.arrowclear"
+    }
+  }
 }

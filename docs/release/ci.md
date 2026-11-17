@@ -69,7 +69,8 @@ ASC_ISSUER=3c721bed-bf99-4f67-891f-5ae3b78bc7ac
 - CLI 成功退出码是 **36**（32=参数错误，34=构建错误），`build_ios.sh` /
   `build_android.sh` 已按此判断；`--build` 参数必须单行，换行会静默不构建。
 - 构建配置在 `tools/build-config-{ios,android}.json`（scene uuid 见文件）；
-  平台细节（targetSdk/ABI/竖屏/包名/版本）由脚本注入，不在 JSON 里写不确定的键。
+  `packages.<platform>.packageName` 是 CLI 构建的必填项（首跑校验出来的），
+  其余平台细节（targetSdk/ABI/竖屏/版本）由脚本注入。
 - `PrivacyInfo.xcprivacy` 无法被 Cocos 写进 Xcode 工程，构建脚本在导出 IPA 后
   注入 `.app` 并用 Distribution 证书重签（`tools/ios/PrivacyInfo.xcprivacy` 为源）。
 - iOS 免签模拟器编译：某些 3.8.x 版本模拟器 slice 有问题，脚本会自动回退到
