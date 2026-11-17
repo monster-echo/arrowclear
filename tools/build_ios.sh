@@ -80,9 +80,12 @@ if [[ $rc != 36 && $rc != 0 ]]; then
 	exit 1
 fi
 
-XCODEPROJ="$(find -L "$PROJ_DIR" -maxdepth 4 -name '*.xcodeproj' -type d -print -quit)"
+# The real app project sits directly under proj/; CMake drops throwaway
+# CompilerId*.xcodeproj probes deeper down — never pick those.
+XCODEPROJ="$(find -L "$PROJ_DIR" -maxdepth 2 -name '*.xcodeproj' -not -path '*CMakeFiles*' -type d -print -quit)"
 if [[ -z "$XCODEPROJ" ]]; then
-	echo "No .xcodeproj under $PROJ_DIR" >&2
+	echo "No app .xcodeproj under $PROJ_DIR; candidates:" >&2
+	find -L "$PROJ_DIR" -name '*.xcodeproj' -type d >&2
 	exit 1
 fi
 echo "project: $XCODEPROJ"
@@ -93,13 +96,14 @@ echo "scheme: $SCHEME"
 
 echo "== patch Info.plist"
 INFO_PLIST="$(find -L "$PROJ_DIR" -maxdepth 5 -name 'Info.plist' \
-	-not -path '*Pods*' -not -path '*Tests*' -print | head -1)"
+	-not -path '*CMakeFiles*' -not -path '*Pods*' -not -path '*Tests*' -print | head -1)"
 if [[ -z "$INFO_PLIST" ]]; then
-	echo "No app Info.plist under $PROJ_DIR" >&2
+	echo "No app Info.plist under $PROJ_DIR; candidates:" >&2
+	find -L "$PROJ_DIR" -name 'Info.plist' >&2
 	exit 1
 fi
 pb_set() {
-	/usr/libexec/PlistBuddy -c "Set :$1=$2" "$INFO_PLIST" 2>/dev/null \
+	/usr/libexec/PlistBuddy -c "Set :$1 $2" "$INFO_PLIST" 2>/dev/null \
 		|| /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$INFO_PLIST"
 }
 pb_set ITSAppUsesNonExemptEncryption false

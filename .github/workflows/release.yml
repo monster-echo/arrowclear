@@ -82,8 +82,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/cocos-creator"
-          curl -L --fail --retry 3 -o /tmp/cocos.zip \
-            "https://download.cocos.com/CocosCreator/v${COCOS_VERSION}/${COCOS_ZIP}"
+          URL="https://download.cocos.com/CocosCreator/v${COCOS_VERSION}/${COCOS_ZIP}"
+          # The CDN drops connections mid-file (~1GB); resume and validate
+          # the zip before trusting it.
+          for attempt in 1 2 3 4 5; do
+            curl -L --fail -C - -o /tmp/cocos.zip "$URL" || true
+            if unzip -tq /tmp/cocos.zip >/dev/null 2>&1; then
+              echo "zip verified on attempt $attempt"
+              break
+            fi
+            echo "::warning::download attempt $attempt failed or incomplete"
+            sleep 15
+          done
+          unzip -tq /tmp/cocos.zip
           unzip -q /tmp/cocos.zip -d "$HOME/cocos-creator"
       - name: Register Cocos binary
         run: |
@@ -177,8 +188,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/cocos-creator"
-          curl -L --fail --retry 3 -o /tmp/cocos.zip \
-            "https://download.cocos.com/CocosCreator/v${COCOS_VERSION}/${COCOS_ZIP}"
+          URL="https://download.cocos.com/CocosCreator/v${COCOS_VERSION}/${COCOS_ZIP}"
+          # The CDN drops connections mid-file (~1GB); resume and validate
+          # the zip before trusting it.
+          for attempt in 1 2 3 4 5; do
+            curl -L --fail -C - -o /tmp/cocos.zip "$URL" || true
+            if unzip -tq /tmp/cocos.zip >/dev/null 2>&1; then
+              echo "zip verified on attempt $attempt"
+              break
+            fi
+            echo "::warning::download attempt $attempt failed or incomplete"
+            sleep 15
+          done
+          unzip -tq /tmp/cocos.zip
           unzip -q /tmp/cocos.zip -d "$HOME/cocos-creator"
       - name: Register Cocos binary
         run: |
