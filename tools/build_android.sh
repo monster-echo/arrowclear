@@ -31,6 +31,10 @@ APP_NAME="${APP_NAME:-arrowclear}"
 KEY_PASS="${KEY_PASS:-${KEYSTORE_PASS:-}}"
 
 eval "$(python3 "$ROOT/tools/set_versions.py" get)"
+# set_versions.py prints lowercase; the workflow injects uppercase env.
+# Accept either so the script works standalone and under CI.
+VERSION="${VERSION:-$version}"
+BUILD="${BUILD:-$build}"
 BUILD_DIR="$ROOT/build/android"
 PROJ_DIR="$BUILD_DIR/proj"
 OUT_DIR="$ROOT/export/android"
@@ -142,25 +146,47 @@ if [[ "$STAGE" == "release" ]]; then
 	set_prop RELEASE_KEY_PASSWORD "$KEY_PASS"
 fi
 
-MAIN_MANIFEST="$(find -L "$PROJ_DIR" -name 'AndroidManifest.xml' \
-	-not -path '*build/outputs*' -print | head -1)"
-if [[ -n "$MAIN_MANIFEST" ]]; then
-	if grep -q 'android:screenOrientation=' "$MAIN_MANIFEST"; then
-		sed -i.bak 's/android:screenOrientation="[^"]*"/android:screenOrientation="portrait"/' \
-			"$MAIN_MANIFEST" && rm -f "$MAIN_MANIFEST.bak"
-		echo "manifest: portrait locked ($MAIN_MANIFEST)"
-	else
-		echo "manifest: no screenOrientation attribute — check orientation ($MAIN_MANIFEST)"
-	fi
-else
-	echo "manifest: no AndroidManifest.xml found under $PROJ_DIR" >&2
+MAIN_MANIFEST=""
+# The :app module lives under NATIVE_DIR (native/engine/android), not in
+# proj/ — proj only carries libservice. Read NATIVE_DIR out of the generated
+# gradle.properties.
+NATIVE_DIR="$(sed -n 's/^NATIVE_DIR=//p' "$GRADLE_PROPS" | head -1)"
+for candidate in "$NATIVE_DIR/app/AndroidManifest.xml" "$PROJ_DIR/app/AndroidManifest.xml"; do
+	[[ -n "$candidate" && -f "$candidate" ]] && { MAIN_MANIFEST="$candidate"; break; }
+done
+if [[ -z "$MAIN_MANIFEST" ]]; then
+	echo "app AndroidManifest.xml not found (NATIVE_DIR=$NATIVE_DIR)" >&2
 	exit 1
+fi
+if grep -q 'android:screenOrientation=' "$MAIN_MANIFEST"; then
+	# Cocos defaults to sensorLandscape; the game is portrait-only. Only the
+	# main activity is rewritten (dialog activities keep their own value).
+	sed -i.bak 's/android:screenOrientation="[^"]*"/android:screenOrientation="portrait"/' \
+		"$MAIN_MANIFEST" && rm -f "$MAIN_MANIFEST.bak"
+	echo "manifest: portrait locked ($MAIN_MANIFEST)"
+else
+	echo "manifest: no screenOrientation attribute — check orientation ($MAIN_MANIFEST)"
 fi
 
 GRADLE="$PROJ_DIR/gradlew"
 if [[ ! -x "$GRADLE" ]]; then
 	GRADLE="gradle"
 	echo "no gradlew wrapper in $PROJ_DIR, using system gradle"
+fi
+
+# Gradle 8.x (the template wrapper) cannot run on very new JDKs; prefer a
+# 17/21 toolchain when the caller did not pick one (same approach as the
+# tungtungtung pipeline).
+if [[ -z "${JAVA_HOME:-}" ]]; then
+	for candidate in \
+		/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+		/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home; do
+		if [[ -x "$candidate/bin/java" ]]; then
+			export JAVA_HOME="$candidate"
+			echo "JAVA_HOME: $candidate"
+			break
+		fi
+	done
 fi
 
 echo "== gradle $STAGE build"

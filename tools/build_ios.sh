@@ -50,6 +50,10 @@ if [[ -z "$IOS_EXTRA_CXXFLAGS" ]]; then
 fi
 
 eval "$(python3 "$ROOT/tools/set_versions.py" get)"
+# set_versions.py prints lowercase; the workflow injects uppercase env.
+# Accept either so the script works standalone and under CI.
+VERSION="${VERSION:-$version}"
+BUILD="${BUILD:-$build}"
 BUILD_DIR="$ROOT/build/ios"
 PROJ_DIR="$BUILD_DIR/proj"
 ARCHIVE="$ROOT/export/ios/$APP_NAME.xcarchive"
@@ -203,6 +207,12 @@ pb_set ITSAppUsesNonExemptEncryption false
 pb_set CFBundleDisplayName "$DISPLAY_NAME"
 pb_set CFBundleShortVersionString "$VERSION"
 pb_set CFBundleVersion "$BUILD"
+# Portrait only, fullscreen: rewrite the orientation array wholesale.
+/usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations" "$INFO_PLIST" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations array" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationPortrait" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Set :UIRequiresFullScreen true" "$INFO_PLIST" 2>/dev/null \
+	|| /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool true" "$INFO_PLIST"
 echo "Info.plist: $INFO_PLIST"
 
 echo "== export App Store IPA"
@@ -248,6 +258,14 @@ cp "$PRIVACY" "$APP_BUNDLE/PrivacyInfo.xcprivacy"
 codesign --force --sign "$SIGNING_IDENTITY" \
 	--preserve-metadata=entitlements,requirements,flags "$APP_BUNDLE"
 codesign --verify --strict "$APP_BUNDLE"
+# Verify the bundle id while the unpacked .app still exists.
+IDENT="$(codesign -dvv "$APP_BUNDLE" 2>/dev/null | sed -n 's/^Identifier=//p')"
+echo "bundle identifier: $IDENT"
+if [[ "$IDENT" != "$BUNDLE_ID" ]]; then
+	echo "Bundle id mismatch: built '$IDENT', expected '$BUNDLE_ID' \
+(check packages.ios.packageName in tools/build-config-ios.json)" >&2
+	exit 1
+fi
 rm -f "$IPA"
 (
 	cd "$STAGE_DIR"
@@ -261,10 +279,4 @@ echo
 echo "IPA: $FINAL (version $VERSION build $BUILD)"
 unzip -l "$FINAL" | grep -F 'PrivacyInfo.xcprivacy' >/dev/null \
 	&& echo "privacy manifest: present"
-IDENT="$(codesign -dvv "$APP_BUNDLE" 2>/dev/null | sed -n 's/^Identifier=//p')"
-echo "bundle identifier: $IDENT"
-if [[ "$IDENT" != "$BUNDLE_ID" ]]; then
-	echo "Bundle id mismatch: built '$IDENT', expected '$BUNDLE_ID' \
-(check packages.ios.packageName in tools/build-config-ios.json)" >&2
-	exit 1
 fi
