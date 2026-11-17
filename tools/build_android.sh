@@ -51,6 +51,21 @@ if [[ -z "$CC_BIN" ]]; then
 	exit 1
 fi
 
+# Cocos 3.8.6 engine headers predate clang 17+, which made the argument-less
+# `this->template fn()` form a hard error. Upstream fixed it in 3.8.7; patch
+# the installed editor's copy in place. Idempotent: lines with explicit
+# template args (fn<T>(...)) do not match the pattern.
+patch_engine_headers() {
+	local header
+	header="$(dirname "$(dirname "$CC_BIN")")/Resources/resources/3d/engine/native/cocos/core/event/EventTarget.h"
+	if [[ -f "$header" ]] && grep -q -- '->template addEventListener(' "$header"; then
+		sed -i.bak 's/->template addEventListener(/->addEventListener(/g' "$header" \
+			&& rm -f "$header.bak"
+		echo "patched engine header for new clang: $header"
+	fi
+}
+patch_engine_headers
+
 echo "== resolve Android SDK/NDK for Cocos"
 # The editor has no preferences on a fresh runner; build options carry the
 # paths instead. Resolve the newest installed NDK and write a resolved copy

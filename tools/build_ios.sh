@@ -38,6 +38,16 @@ ASC_KEY_PATH="${ASC_KEY_PATH:-/Users/echo/workspace/keys/AuthKey_3A864HP66K.p8}"
 ASC_KEY_ID="${ASC_KEY_ID:-3A864HP66K}"
 ASC_ISSUER="${ASC_ISSUER:-3c721bed-bf99-4f67-891f-5ae3b78bc7ac}"
 PRIVACY="$ROOT/tools/ios/PrivacyInfo.xcprivacy"
+# Cocos 3.8.6 defaults to iOS 12.0; modern Xcode (26+) refuses anything
+# below 15.0. 15 also matches the tungtongtung baseline.
+IOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET:-15.0}"
+# New clang (Xcode 26+) hard-errors on patterns Cocos 3.8.6's vendored
+# headers still use (enoki specializes std:: type traits, old enum
+# conversions). Downgrade those diagnostics; real breakage still fails.
+IOS_EXTRA_CXXFLAGS="${IOS_EXTRA_CXXFLAGS:-}"
+if [[ -z "$IOS_EXTRA_CXXFLAGS" ]]; then
+	IOS_EXTRA_CXXFLAGS='$(inherited) -Wno-error=invalid-specialization -Wno-error=enum-constexpr-conversion -Wno-error=deprecated-declarations -Wno-error=deprecated-non-prototype'
+fi
 
 eval "$(python3 "$ROOT/tools/set_versions.py" get)"
 BUILD_DIR="$ROOT/build/ios"
@@ -60,6 +70,34 @@ CC_BIN="$(find_cocos || true)"
 if [[ -z "$CC_BIN" ]]; then
 	echo "Cocos Creator 3.8.6 not found. Set COCOS=/path/to/CocosCreator binary." >&2
 	exit 1
+fi
+
+# Cocos 3.8.6 engine headers predate clang 17+, which made the argument-less
+# `this->template fn()` form a hard error ("a template argument list is
+# expected after a name prefixed by the template keyword"). Upstream fixed it
+# in 3.8.7; patch the installed editor's copy in place. Idempotent: lines with
+# explicit template args (fn<T>(...)) do not match the pattern.
+patch_engine_headers() {
+	local header
+	header="$(dirname "$(dirname "$CC_BIN")")/Resources/resources/3d/engine/native/cocos/core/event/EventTarget.h"
+	if [[ -f "$header" ]] && grep -q -- '->template addEventListener(' "$header"; then
+		sed -i.bak 's/->template addEventListener(/->addEventListener(/g' "$header" \
+			&& rm -f "$header.bak"
+		echo "patched engine header for new clang: $header"
+	fi
+}
+patch_engine_headers
+
+# Same era problem: some vendored .a libraries have 64-bit mach-o members
+# that are not 8-byte aligned; the new linker drops those members outright.
+# Repack the misaligned ones in place (idempotent, marker-guarded).
+EDITOR_RES="$(dirname "$(dirname "$CC_BIN")")/Resources/resources/3d/engine/native/external"
+LIB_DIRS=()
+for d in ios/libs ios-m1-simulator/libs mac/libs; do
+	[[ -d "$EDITOR_RES/$d" ]] && LIB_DIRS+=("$EDITOR_RES/$d")
+done
+if [[ ${#LIB_DIRS[@]} -gt 0 ]]; then
+	python3 "$ROOT/tools/repack_libs.py" "${LIB_DIRS[@]}"
 fi
 if [[ "$STAGE" != "xcode" && "$STAGE" != "sim" && ! -f "$ASC_KEY_PATH" ]]; then
 	echo "App Store Connect key not found at: $ASC_KEY_PATH" >&2
@@ -106,11 +144,15 @@ if [[ "$STAGE" == "sim" ]]; then
 	# an unsigned device build so the dry run still proves the project compiles.
 	if ! xcodebuild -project "$XCODEPROJ" -scheme "$SCHEME" -configuration Release \
 		-sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+		IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+		OTHER_CPLUSPLUSFLAGS="$IOS_EXTRA_CXXFLAGS" \
 		CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
 		PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" build; then
 		echo "simulator compile failed; retrying as unsigned device build"
 		xcodebuild -project "$XCODEPROJ" -scheme "$SCHEME" -configuration Release \
 			-sdk iphoneos -destination 'generic/platform=iOS' \
+			IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+			OTHER_CPLUSPLUSFLAGS="$IOS_EXTRA_CXXFLAGS" \
 			CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
 			PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" build
 	fi
@@ -130,6 +172,8 @@ SIGNING_ARGS=(
 	PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
 	MARKETING_VERSION="$VERSION"
 	CURRENT_PROJECT_VERSION="$BUILD"
+	IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
+	OTHER_CPLUSPLUSFLAGS="$IOS_EXTRA_CXXFLAGS"
 	-allowProvisioningUpdates
 	-authenticationKeyPath "$ASC_KEY_PATH"
 	-authenticationKeyID "$ASC_KEY_ID"
