@@ -5,6 +5,8 @@ const ICONS: Record<string, string> = {
 
   coin: `<circle cx="12" cy="12" r="10" fill="#F5A623"/><circle cx="12" cy="11.4" r="8.2" fill="#FFD34D"/><circle cx="12" cy="11.4" r="8.2" fill="none" stroke="#FFE79A" stroke-width="1.4"/><path fill="#F5A623" d="m12 6.6 1.42 2.9 3.2.46-2.31 2.25.55 3.18L12 13.9l-2.86 1.5.55-3.19-2.32-2.25 3.2-.46Z"/>`,
 
+  bolt: `<path fill="#FFC93C" stroke="#F0A81E" stroke-width="1.1" stroke-linejoin="round" d="M13.6 2 5.2 13.2h4.6L8.6 22l8.4-11.2h-4.6L13.6 2Z"/><path fill="#FFE79A" d="M12.9 4.6 7.8 12.3h2.5L9.5 17l4.6-6.1h-2.4l1.2-6.3Z" opacity=".8"/>`,
+
   heart: `<path fill="#F2685F" d="M12 21s-7.5-4.6-9.2-8.6C1.4 9.2 3.2 5.5 6.8 5.5c2 0 3.3 1 4.2 2.2.9-1.2 2.2-2.2 4.2-2.2 3.6 0 5.4 3.7 4 6.9C19.5 16.4 12 21 12 21Z"/><path fill="#FF9C93" d="M8.2 8.3c-1.5 0-2.6 1.2-2.5 2.7.1 1 .7 1.9 1.5 2.7-.3-1.3.2-2.4 1.2-3.1.3-.2.6-.4.9-.5-.3-.5-.6-.9-1.1-1.8Z" opacity=".7"/>`,
 
   clock: `<circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="2.2"/><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 7.4V12l3.2 2"/>`,
@@ -40,6 +42,10 @@ const ICONS: Record<string, string> = {
   home: `<path fill="currentColor" d="m12 3.4 8.4 7.1-1.7 2-1.2-1v8.1H14v-5.3h-4v5.3H6.5v-8.1l-1.2 1-1.7-2Z"/>`,
 
   close2: `<path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="m6.5 6.5 11 11M17.5 6.5l-11 11"/>`,
+
+  zoomIn: `<circle cx="10.4" cy="10.4" r="6.4" fill="none" stroke="currentColor" stroke-width="2.1"/><path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" d="M15.2 15.2 21 21M10.4 7.6v5.6M7.6 10.4h5.6"/>`,
+
+  zoomOut: `<circle cx="10.4" cy="10.4" r="6.4" fill="none" stroke="currentColor" stroke-width="2.1"/><path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" d="M15.2 15.2 21 21M7.6 10.4h5.6"/>`,
 };
 
 export function icon(name: string, cls = ''): string {

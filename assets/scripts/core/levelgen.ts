@@ -1,4 +1,5 @@
 import { Rng } from './rng';
+import { generatePeelLevel } from './peelgen';
 import {
   Arrow,
   Cell,
@@ -6,6 +7,9 @@ import {
   DIR_VECTORS,
   Level,
   OPPOSITE,
+  bodyCellCount,
+  bossShadowCells,
+  canArrowEscape,
   cellKey,
   corridorCells,
 } from './types';
@@ -22,6 +26,15 @@ export interface GenOptions {
   freeTarget: number;
   seed: number;
   timeLimit?: number;
+  /** Silhouette mask; when omitted the whole rectangle is playable. */
+  mask?: Uint8Array;
+  /** Cosmetic silhouette id. */
+  shape?: string;
+  laneMax?: number;
+  laneTail?: number;
+  laneSegMin?: number;
+  laneSegMax?: number;
+  remote?: boolean;
 }
 
 export interface LevelStats {
@@ -49,13 +62,17 @@ class Builder {
   readonly cols: number;
   readonly rows: number;
   readonly body: Int16Array;
+  readonly mask: Uint8Array | null;
+  readonly shape?: string;
   readonly placed: Arrow[] = [];
   readonly corridors: Cell[][] = [];
 
-  constructor(cols: number, rows: number) {
+  constructor(cols: number, rows: number, mask?: Uint8Array, shape?: string) {
     this.cols = cols;
     this.rows = rows;
     this.body = new Int16Array(cols * rows).fill(-1);
+    this.mask = mask ?? null;
+    this.shape = shape;
   }
 
   private idx(x: number, y: number): number {
@@ -67,7 +84,10 @@ class Builder {
     return this.body[this.idx(x, y)];
   }
 
+  /** May an arrow body be placed here? Mask-aware; empty outside the mask. */
   private isFree(x: number, y: number): boolean {
+    if (x < 0 || y < 0 || x >= this.cols || y >= this.rows) return false;
+    if (this.mask && this.mask[y * this.cols + x] !== 1) return false;
     return this.ownerAt(x, y) === -1;
   }
 
@@ -135,8 +155,10 @@ class Builder {
   /** Corridor free of every body already on the board? */
   private corridorClear(head: Cell, dir: Dir): Cell[] | null {
     const cells = this.frontCells(head, dir);
+    // The corridor only needs to be free of arrow bodies. It is allowed to
+    // leave the silhouette mask — that is how arrows escape a picture level.
     for (const c of cells) {
-      if (!this.isFree(c.x, c.y)) return null;
+      if (this.ownerAt(c.x, c.y) !== -1) return null;
     }
     return cells;
   }
@@ -232,12 +254,14 @@ class Builder {
       timeLimit: 0,
       seed: 0,
       solution: order,
+      mask: this.mask ?? undefined,
+      shape: this.shape,
     };
   }
 }
 
 /** Greedy graph colouring so neighbouring arrows never share a colour. */
-function assignColors(arrows: Arrow[], cols: number, rows: number): void {
+export function assignColors(arrows: Arrow[], cols: number, rows: number): void {
   const paletteSize = 9;
   const owners = new Int16Array(cols * rows).fill(-1);
   for (const a of arrows) {
@@ -290,11 +314,15 @@ function assignColors(arrows: Arrow[], cols: number, rows: number): void {
 
 export function arrowsFreeAtStart(level: Level): number {
   let free = 0;
-  const occ = new Set<number>();
-  for (const a of level.arrows) for (const c of a.cells) occ.add(cellKey(c));
+  const occ = new Map<number, number>();
   for (const a of level.arrows) {
-    const cor = corridorCells(level, a);
-    if (cor.every((c) => !occ.has(cellKey(c)))) free++;
+    for (const c of a.cells) occ.set(cellKey(c), a.id);
+    for (const c of bossShadowCells(level, a)) occ.set(cellKey(c), a.id);
+  }
+  for (const a of level.arrows) {
+    if (canArrowEscape(level, a, (c) => occ.get(cellKey(c)) !== undefined && occ.get(cellKey(c)) !== a.id)) {
+      free++;
+    }
   }
   return free;
 }
@@ -314,7 +342,7 @@ export function analyzeLevel(level: Level): LevelStats {
   return {
     arrows: level.arrows.length,
     freeAtStart: arrowsFreeAtStart(level),
-    fillRatio: cells / (level.cols * level.rows),
+    fillRatio: cells / Math.max(1, bodyCellCount(level)),
     avgLength: cells / Math.max(1, level.arrows.length),
     turns,
   };
@@ -322,7 +350,7 @@ export function analyzeLevel(level: Level): LevelStats {
 
 function tryGenerate(opts: GenOptions): Level | null {
   const rng = new Rng(opts.seed);
-  const b = new Builder(opts.cols, opts.rows);
+  const b = new Builder(opts.cols, opts.rows, opts.mask, opts.shape);
 
   let guard = 0;
   while (b.placed.length < opts.targetArrows && guard++ < opts.targetArrows * 4) {
@@ -341,6 +369,8 @@ function tryGenerate(opts: GenOptions): Level | null {
 
   const level = b.finalize();
   level.id = opts.id;
+  level.mask = opts.mask;
+  level.shape = opts.shape;
   level.seed = opts.seed;
   level.arrows.forEach((a, i) => (a.id = i));
   level.timeLimit =
@@ -361,11 +391,15 @@ function countFree(b: Builder): number {
 /**
  * Remove any free arrow until the board is empty. Because every move only
  * frees cells, a greedy pass is a complete solvability test.
+ * Boss 箭（OR 逃逸 + 影子占位）同样支持。
  */
 export function solveGreedy(level: Level): { solved: boolean; order: number[] } {
   const alive = new Set(level.arrows.map((a) => a.id));
-  const occ = new Set<number>();
-  for (const a of level.arrows) for (const c of a.cells) occ.add(cellKey(c));
+  const occ = new Map<number, number>();
+  for (const a of level.arrows) {
+    for (const c of a.cells) occ.set(cellKey(c), a.id);
+    for (const c of bossShadowCells(level, a)) occ.set(cellKey(c), a.id);
+  }
   const order: number[] = [];
 
   let progress = true;
@@ -373,9 +407,13 @@ export function solveGreedy(level: Level): { solved: boolean; order: number[] } 
     progress = false;
     for (const a of level.arrows) {
       if (!alive.has(a.id)) continue;
-      const cor = corridorCells(level, a);
-      if (cor.some((c) => occ.has(cellKey(c)))) continue;
+      const blocked = (c: Cell): boolean => {
+        const owner = occ.get(cellKey(c));
+        return owner !== undefined && owner !== a.id;
+      };
+      if (!canArrowEscape(level, a, blocked)) continue;
       for (const c of a.cells) occ.delete(cellKey(c));
+      for (const c of bossShadowCells(level, a)) occ.delete(cellKey(c));
       alive.delete(a.id);
       order.push(a.id);
       progress = true;
@@ -385,6 +423,29 @@ export function solveGreedy(level: Level): { solved: boolean; order: number[] } 
 }
 
 export function generateLevel(opts: GenOptions): Level {
+  // Picture levels are tiled completely: every mask cell belongs to an arrow.
+  // The peel generator constructs a removal chain from the outside in.
+  if (opts.mask) {
+    const peel = generatePeelLevel({
+      id: opts.id,
+      cols: opts.cols,
+      rows: opts.rows,
+      mask: opts.mask,
+      shape: opts.shape,
+      minLen: opts.minLen,
+      maxLen: opts.maxLen,
+      freeTarget: opts.freeTarget,
+      seed: opts.seed,
+      timeLimit: opts.timeLimit,
+      laneMax: opts.laneMax,
+      laneTail: opts.laneTail,
+      laneSegMin: opts.laneSegMin,
+      laneSegMax: opts.laneSegMax,
+      remote: opts.remote,
+    });
+    if (peel) return peel;
+  }
+
   let best: Level | null = null;
   let bestScore = -Infinity;
 

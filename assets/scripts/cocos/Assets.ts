@@ -71,6 +71,7 @@ export class Assets {
       'shop',
       'help',
       'close',
+      'bolt',
     ];
     const art = ['logo', 'mascot', 'bg'];
     const audio = ['pop', 'thud', 'win', 'lose', 'coin', 'click'];

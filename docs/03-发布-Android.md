@@ -154,7 +154,8 @@ bundletool install-apks --apks=app.apks
 `assets/scripts/cocos/Platform.ts` 已经预留了桥接位置。推荐用 Cocos 的 AdMob 插件或
 `native.reflection` 调用原生 SDK：
 
-- 激励视频：「看广告 +50 金币」按钮（`GameRoot.showShop()` 里已占位）
+- 激励视频：三个广告位——体力弹窗（+1 体力）、失败复活（回 3 心加时）、提示用完（+1 次），
+  入口都在 `GameRoot.ts`，广告桥在 `Platform.showRewardedAd()`
 - 插屏：每 3 关一次，注意不要在结算弹窗上叠加
 - 隐私：欧盟需 UMP / GDPR 同意；美国需 COPPA 声明
 

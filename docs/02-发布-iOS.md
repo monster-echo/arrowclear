@@ -127,7 +127,7 @@ Cocos 引擎在 iOS 上会通过 `NSUserDefaults` 保存本地数据。
 | 副标题 | 停不下来的箭阵解谜 |
 | 类别 | 游戏 / 益智 |
 | 年龄分级 | 4+ |
-| 价格 | 免费 + 内购 |
+| 价格 | 免费 + 激励广告（无内购） |
 
 ### 4.2 截图
 
@@ -147,24 +147,20 @@ DPR 3，再跑 `tools/cdp.mjs`）。
   即使不收集，也需要一个说明页。
 - 若接入了广告/统计，必须声明 Device ID、使用数据等。
 
-### 4.4 内购（金币）
+### 4.4 激励广告（无内购）
 
-App Store 审核指南 3.1.1：**虚拟币必须走 IAP**，不能跳转外部支付。
+本作**不含任何内购/计费**，也没有金币等中间货币，变现只有激励视频：
+补体力、失败复活、补提示三个入口（每次广告 +1 点/次），因此不触发审核指南 3.1.1。
 
-建议 SKU：
+接入方式（正式包）：
 
-| Product ID | 类型 | 内容 |
-| --- | --- | --- |
-| `com.yourcompany.arrowclear.coins_120` | Consumable | 120 金币 |
-| `com.yourcompany.arrowclear.coins_680` | Consumable | 680 金币 |
-| `com.yourcompany.arrowclear.noads` | Non-Consumable | 去除强制广告 |
+1. Cocos Service 面板接入 AdMob / 穿山甲等聚合 SDK，创建「激励视频」广告位；
+2. 把广告位 ID 填进 `assets/scripts/cocos/Platform.ts` 的广告桥（微信端已接
+   `wx.createRewardedVideoAd`，iOS/Android 原生位待填）；
+3. 未配 ID 时游戏自动回退到内置「演示广告」，不会崩溃也不会留空白位。
 
-接入方式二选一：
-
-1. 使用成熟的 Cocos StoreKit 插件 / RevenueCat，客户端只负责发起购买与发货；
-2. 自写 Objective-C/Swift 桥接 `SKPaymentQueue`，Cocos 侧通过 `native.reflection` 调用。
-
-无论哪种，**发货必须服务端校验收据**，否则容易被刷。
+接入广告 SDK 后注意：隐私政策与「App 隐私」标签要声明设备标识符/使用数据；
+用到 IDFA 的聚合 SDK 需要加 ATT 弹窗（`NSUserTrackingUsageDescription`）。
 
 ---
 
@@ -173,8 +169,8 @@ App Store 审核指南 3.1.1：**虚拟币必须走 IAP**，不能跳转外部�
 | 条款 | 风险 | 处理 |
 | --- | --- | --- |
 | 4.2 Minimum Functionality | 玩法太单薄被拒 | 60 关 + 星级 + 提示 + 存档，已具备基本内容量；提审时在备注里写清玩法 |
-| 2.1 App Completeness | 闪退/占位按钮 | 不要留「敬请期待」按钮；广告位未接就隐藏 |
-| 3.1.1 In-App Purchase | 金币跳外部支付 | 全部走 IAP |
+| 2.1 App Completeness | 闪退/占位按钮 | 不要留「敬请期待」按钮；未配广告位时自动回退演示广告，不留空白 |
+| 3.1.1 In-App Purchase | 无内购被误判 | 商店只有广告入口，无任何付费项；提审备注写明「无内购」 |
 | 5.1.1 Privacy | 未声明数据收集 | 隐私清单 + 隐私政策 |
 | 2.3.1 Hidden Features | 动态下发玩法 | 不要热更代码 |
 
@@ -182,7 +178,8 @@ App Store 审核指南 3.1.1：**虚拟币必须走 IAP**，不能跳转外部�
 
 ```
 一箭清空是一款单机解谜游戏。点击箭头发射，前方被挡会撞墙扣血，
-清空棋盘过关。共 60 关，无账号系统，本地存档。
+清空棋盘过关。共 60 关，无账号系统，本地存档，无内购；
+体力与提示次数均可通过观看激励视频免费获得。
 ```
 
 ---
@@ -195,7 +192,7 @@ App Store 审核指南 3.1.1：**虚拟币必须走 IAP**，不能跳转外部�
 - [ ] 6.9 英寸截图 3 张以上
 - [ ] 隐私政策 URL 可访问
 - [ ] PrivacyInfo.xcprivacy 已加入 target
-- [ ] 内购商品在 ASC 创建并处于「准备提交」
+- [ ] 激励视频广告位 ID 已配置（或确认以演示广告提审）
 - [ ] 真机 Release 包无崩溃、音频正常
 - [ ] 出口合规 `ITSAppUsesNonExemptEncryption=false`
 - [ ] TestFlight 内部试玩通过

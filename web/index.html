@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no"
     />
-    <meta name="theme-color" content="#CFEFF7" />
+    <meta name="theme-color" content="#F5F6FA" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>一箭清空 · Arrow Clear</title>
@@ -31,24 +31,46 @@
               </div>
             </div>
           </div>
-          <div class="coin-pill" id="hud-coins">
-            <span data-icon="coin"></span><b>0</b>
-          </div>
         </div>
         <div class="progress"><i id="hud-progress"></i></div>
       </header>
+      <div id="debug-panel" class="debug-panel is-hidden">
+        <button id="debug-close" class="debug-close" aria-label="关闭调试">×</button>
+        <div class="debug-title">DEBUG · 关卡质量</div>
+        <div class="debug-row"><span>链接深度</span><b id="dbg-depth">--</b></div>
+        <div class="debug-row"><span>棋盘评分</span><b id="dbg-score">--</b></div>
+        <div class="debug-row"><span>可释放</span><b id="dbg-free">--</b></div>
+        <div class="debug-row"><span>推进</span><b id="dbg-progress">--</b></div>
+        <div class="debug-row"><span>箭头 / 填充</span><b id="dbg-arrows">--</b></div>
+        <div id="dbg-formula" class="debug-formula">--</div>
+        <div class="debug-actions">
+          <button id="dbg-autosolve" class="debug-btn">▶ 自动解密</button>
+          <button id="dbg-xray" class="debug-btn" title="X-Ray 精妙透视（快捷键 X）">✨ 透视</button>
+          <button id="dbg-newsolve" class="debug-btn" title="重新解一遍">↻ 重置</button>
+        </div>
+        <div class="debug-actions" style="flex-direction: column; gap: 3px;">
+          <div style="color:#9fb2c8">①→⑥ 蓝弧=跃迁链 · 橙框=连环扣</div>
+          <div style="color:#9fb2c8">金脊=击尾导流 · 绿虚线=穿针窄门</div>
+        </div>
+      </div>
 
       <footer id="toolbar" class="toolbar is-hidden">
-        <button class="tool" id="btn-hint">
+        <button class="tool tool-compact" id="btn-hint" aria-label="提示">
           <span class="tool-ico" data-icon="bulb"></span>
           <span class="tool-label">提示</span>
-          <span class="tool-badge" id="hint-cost">30</span>
+          <span class="tool-badge" id="hint-cost">3</span>
         </button>
-        <button class="tool" id="btn-sound">
-          <span class="tool-ico" data-icon="sound"></span>
-          <span class="tool-label">音效</span>
-        </button>
-        <button class="tool" id="btn-restart">
+        <div class="zoom-wrap">
+          <button class="zoom-btn" id="btn-zoom-out" aria-label="缩小">
+            <span data-icon="zoomOut"></span>
+          </button>
+          <input id="zoom-range" type="range" min="65" max="220" step="1" value="100" aria-label="缩放" />
+          <button class="zoom-btn" id="btn-zoom-in" aria-label="放大">
+            <span data-icon="zoomIn"></span>
+          </button>
+          <span class="zoom-label" id="zoom-label">100%</span>
+        </div>
+        <button class="tool tool-compact" id="btn-restart" aria-label="重来">
           <span class="tool-ico" data-icon="restart"></span>
           <span class="tool-label">重来</span>
         </button>
@@ -59,9 +81,10 @@
           <button class="icon-btn glass" id="btn-home-settings" aria-label="设置">
             <span data-icon="gear"></span>
           </button>
-          <button class="coin-pill glass" id="btn-home-coins">
-            <span data-icon="coin"></span><b id="home-coins">0</b>
-            <span class="plus">+</span>
+          <button class="energy-pill" id="btn-energy" aria-label="体力">
+            <span data-icon="bolt"></span>
+            <b id="energy-count">5/5</b>
+            <span class="energy-next" id="energy-next"></span>
           </button>
         </div>
 
@@ -78,15 +101,12 @@
             <span class="play-tri" data-icon="play"></span>
             <span>开始游戏</span>
           </button>
-          <div class="home-hint" id="home-hint">点击箭头发射，清空整块棋盘</div>
+          <div class="home-hint" id="home-hint">点击箭头发射，清空整幅图案</div>
         </div>
 
         <nav class="home-nav">
           <button class="nav-btn" id="btn-nav-levels">
             <span class="nav-ico" data-icon="levels"></span><span>关卡</span>
-          </button>
-          <button class="nav-btn" id="btn-nav-shop">
-            <span class="nav-ico" data-icon="shop"></span><span>商店</span>
           </button>
           <button class="nav-btn" id="btn-nav-howto">
             <span class="nav-ico" data-icon="help"></span><span>玩法</span>
@@ -109,7 +129,6 @@
 
       <div id="overlay" class="overlay is-hidden"></div>
       <div id="toast" class="toast"></div>
-      <div id="combo" class="combo"></div>
     </div>
 
     <script type="module" src="./main.js"></script>

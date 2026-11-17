@@ -12,6 +12,7 @@
     "check": "tsc -p tsconfig.web.json --noEmit",
     "check:cocos": "tsc -p tsconfig.cocos.json",
     "test:levels": "esbuild tools/check-levels.ts --bundle --platform=node --format=esm --outfile=.tmp/check.mjs --log-level=warning && node .tmp/check.mjs",
+    "score:levels": "esbuild tools/score-levels.ts --bundle --platform=node --format=esm --outfile=.tmp/score.mjs --log-level=warning && node .tmp/score.mjs",
     "assets": "python3 tools/gen_assets.py && node tools/render-assets.mjs && python3 tools/subset_font.py",
     "test:core": "esbuild tests/core.test.ts --bundle --platform=node --format=esm --outfile=.tmp/core.test.mjs --log-level=warning && node .tmp/core.test.mjs",
     "test:e2e": "node web/build.mjs && node tests/e2e.mjs",

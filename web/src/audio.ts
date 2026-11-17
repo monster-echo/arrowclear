@@ -80,9 +80,8 @@ export class Sfx {
     this.tone(520, 0.07, 'triangle', 0.1, 680);
   }
 
-  clear(combo = 0): void {
-    const semis = Math.min(combo, 9) * 2;
-    const base = 392 * Math.pow(2, semis / 12);
+  clear(): void {
+    const base = 392;
     this.tone(base, 0.16, 'sine', 0.2, base * 1.9);
     this.tone(base * 2, 0.09, 'triangle', 0.07, base * 2.6);
     this.noise(0.13, 0.05, 2200, 5200);

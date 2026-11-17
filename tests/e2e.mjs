@@ -17,7 +17,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DIST = path.join(ROOT, 'dist', 'web');
 const ARTIFACTS = path.join(ROOT, 'tests', 'artifacts');
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME =
+  process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const results = [];
 let failed = 0;
@@ -251,6 +252,22 @@ await cdp.send('Page.navigate', { url: BASE });
 await sleep(1200);
 
 const state = () => cdp.eval('window.__arrowGame ? window.__arrowGame.debugState() : null');
+const energy = () => cdp.eval('window.__arrowGame ? window.__arrowGame.save.energy : -1');
+/** QA harness: top the stamina back up so a step can always start a level. */
+const topUpEnergy = () =>
+  cdp.eval(`(() => {
+    const g = window.__arrowGame;
+    g.save.energy = 5;
+    g.save.energyAt = Date.now();
+    return g.save.energy;
+  })()`);
+/** Wait for the simulated rewarded ad to finish and claim the reward. */
+const watchAd = async () => {
+  await cdp.waitFor("document.querySelector('#ad-reward')", 4000, 'ad overlay');
+  await cdp.waitFor("!document.querySelector('#ad-reward').disabled", 9000, 'ad countdown');
+  await cdp.eval("document.querySelector('#ad-reward').click()");
+  await sleep(250);
+};
 const freePos = () =>
   cdp.eval(`(() => {
     const p = window.__arrowGame.debugFreeArrowScreenPos();
@@ -259,7 +276,8 @@ const freePos = () =>
 const blockedPos = () =>
   cdp.eval(`(() => {
     const g = window.__arrowGame;
-    const a = g.level.arrows.find((x) => g.alive.has(x.id) && !g.renderer.isFree(x, g.alive));
+    const a = g.level.arrows.find(
+      (x) => g.alive.has(x.id) && !g.renderer.isFrozenActive(x) && !g.renderer.isFree(x, g.alive));
     if (!a) return null;
     const p = g.renderer.cellCenter(a.cells[0]);
     return { x: p.x, y: p.y };
@@ -283,16 +301,21 @@ await step('home renders with logo, mascot and play button', async () => {
     logo: !!document.querySelector('#logo svg'),
     mascot: !!document.querySelector('#mascot svg'),
     playVisible: document.querySelector('#btn-play').getBoundingClientRect().height > 40,
-    coins: document.querySelector('#home-coins').textContent,
+    energy: document.querySelector('#energy-count').textContent,
+    comboGone: !document.querySelector('#combo'),
+    shopGone: !document.querySelector('#btn-nav-shop') && !document.querySelector('#home-coins')
+              && !document.querySelector('#hud-coins'),
   })`);
   assert(info.logo, 'logo svg missing');
   assert(info.mascot, 'mascot svg missing');
   assert(info.playVisible, 'play button not visible');
   assert(info.title.includes('一箭清空'), 'title missing');
-  assert(info.coins === '120', `initial coins should be 120, got ${info.coins}`);
+  assert(info.energy === '5/5', `initial energy should be 5/5, got ${info.energy}`);
+  assert(info.comboGone, 'combo element should be removed');
+  assert(info.shopGone, 'coin/shop UI should be removed');
   assert(nav.fcp > 0 && nav.fcp < 1500, `first paint ${nav.fcp}ms > 1500ms`);
   assert(nav.dcl < 1500, `DOMContentLoaded ${nav.dcl}ms > 1500ms`);
-  return `coins=${info.coins}, FCP=${nav.fcp}ms, DCL=${nav.dcl}ms`;
+  return `energy=${info.energy}, shop removed, FCP=${nav.fcp}ms, DCL=${nav.dcl}ms`;
 });
 
 await step('no horizontal overflow at 430×932', async () => {
@@ -305,7 +328,7 @@ await step('no horizontal overflow at 430×932', async () => {
 });
 
 console.log('\n[E2E] level start');
-await step('start level 1', async () => {
+await step('start level 1 does not drain energy', async () => {
   await cdp.eval("document.querySelector('#btn-play').click()");
   await cdp.waitFor("window.__arrowGame && window.__arrowGame.debugState().running", 4000);
   // first-run tutorial
@@ -315,9 +338,10 @@ await step('start level 1', async () => {
   const s = await state();
   eq(s.level, 1, 'level id');
   eq(s.hearts, 3, 'hearts');
+  eq(await energy(), 5, 'starting a level keeps energy (failure-charged model)');
   assert(s.total >= 10, `expected >=10 arrows, got ${s.total}`);
   eq(s.alive, s.total, 'alive at start');
-  return `arrows=${s.total}, free=${s.free}`;
+  return `arrows=${s.total}, free=${s.free}, energy=${await energy()}`;
 });
 
 await step('board and toolbar are inside the viewport', async () => {
@@ -362,15 +386,18 @@ await step('tap a blocked arrow costs a heart', async () => {
   return `hearts ${before.hearts}→${after.hearts}, "${toast.text}"`;
 });
 
-await step('hint costs 30 coins and highlights an arrow', async () => {
-  const before = await cdp.eval('window.__arrowGame.save.coins');
+await step('hint spends one banked hint and highlights an arrow', async () => {
+  const before = await cdp.eval('window.__arrowGame.save.hints');
+  eq(before, 3, 'initial banked hints');
   await cdp.eval("document.querySelector('#btn-hint').click()");
   await sleep(250);
-  const after = await cdp.eval('window.__arrowGame.save.coins');
-  eq(after, before - 30, 'coins after hint');
+  const after = await cdp.eval('window.__arrowGame.save.hints');
+  eq(after, before - 1, 'hints after use');
+  const badge = await cdp.eval("document.querySelector('#hint-cost').textContent");
+  eq(badge, String(after), 'hint badge shows remaining hints');
   const hint = await cdp.eval('window.__arrowGame.hintId');
   assert(hint !== null && hint !== undefined, 'hint not set');
-  return `coins ${before}→${after}, hintId=${hint}`;
+  return `hints ${before}→${after}, hintId=${hint}`;
 });
 
 await step('pause and resume', async () => {
@@ -398,7 +425,7 @@ await step('restart resets progress and hearts', async () => {
 
 console.log('\n[E2E] win flow');
 await step('clear the board and reach the win modal', async () => {
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 500; i++) {
     const s = await state();
     if (!s.running) break;
     const pos = await freePos();
@@ -408,7 +435,10 @@ await step('clear the board and reach the win modal', async () => {
   }
   const s = await state();
   eq(s.alive, 0, 'all arrows cleared');
-  await sleep(700);
+  // 连击系统已移除：清屏过程不应出现任何连击文案。
+  const comboText = await cdp.eval("document.body.textContent.includes('连击')");
+  assert(!comboText, 'combo copy should never appear');
+  await cdp.waitFor("document.querySelector('#overlay').textContent.includes('通关啦')", 3000, 'win modal');
   const modal = await cdp.eval("document.querySelector('#overlay').textContent");
   assert(modal.includes('通关啦'), `win modal missing: ${modal.slice(0, 60)}`);
   await cdp.waitFor("document.querySelectorAll('#win-stars svg.on').length === 3", 2500, '3 stars');
@@ -416,8 +446,10 @@ await step('clear the board and reach the win modal', async () => {
   eq(stars, 3, 'three stars for a clean run');
   const save = await cdp.eval("JSON.parse(localStorage.getItem('arrowclear.save.v2'))");
   eq(save.unlocked, 2, 'unlocked after win');
+  eq(save.energy, 5, 'win drains no energy');
+  eq(save.coins, undefined, 'coin field should be gone from the save');
   await cdp.shot('e2e-win');
-  return `stars=${stars}, coins=${save.coins}, unlocked=${save.unlocked}`;
+  return `stars=${stars}, energy=${save.energy}`;
 });
 
 await step('next level loads', async () => {
@@ -430,7 +462,8 @@ await step('next level loads', async () => {
 });
 
 console.log('\n[E2E] lose flow');
-await step('three blocked taps end the run', async () => {
+await step('three blocked taps end the run and cost 1 energy', async () => {
+  const energyBefore = await energy();
   for (let i = 0; i < 3; i++) {
     const pos = await blockedPos();
     assert(pos, 'no blocked arrow');
@@ -440,6 +473,34 @@ await step('three blocked taps end the run', async () => {
   const s = await state();
   eq(s.hearts, 0, 'hearts exhausted');
   eq(s.running, false, 'run stopped');
+  eq(await energy(), energyBefore - 1, 'losing a level costs 1 energy');
+  await sleep(900);
+  const modal = await cdp.eval("document.querySelector('#overlay').textContent");
+  assert(modal.includes('爱心用尽'), `lose modal missing: ${modal.slice(0, 60)}`);
+  await cdp.shot('e2e-lose');
+  return `lose modal shown, energy ${energyBefore}→${await energy()}`;
+});
+
+await step('watching a rewarded ad revives the run', async () => {
+  await cdp.eval("document.querySelector('#lose-revive').click()");
+  await watchAd();
+  const s = await state();
+  eq(s.hearts, 3, 'hearts restored by revive');
+  eq(s.running, true, 'running after revive');
+  eq(await energy(), 5, 'revive refunds the loss charge');
+  return `hearts=${s.hearts}, energy=${await energy()} (refunded)`;
+});
+
+await step('losing again after revive shows the modal', async () => {
+  for (let i = 0; i < 3; i++) {
+    const pos = await blockedPos();
+    assert(pos, 'no blocked arrow');
+    await cdp.tap(pos.x, pos.y);
+    await sleep(280);
+  }
+  const s = await state();
+  eq(s.hearts, 0, 'hearts exhausted again');
+  eq(s.running, false, 'run stopped again');
   await sleep(900);
   const modal = await cdp.eval("document.querySelector('#overlay').textContent");
   assert(modal.includes('爱心用尽'), `lose modal missing: ${modal.slice(0, 60)}`);
@@ -469,20 +530,24 @@ await step('progress survives a reload', async () => {
   return chip;
 });
 
-await step('level select shows 60 tiles with locks', async () => {
+await step('level select shows the current chapter (20 tiles, paginated)', async () => {
   await cdp.eval("document.querySelector('#btn-nav-levels').click()");
   await sleep(350);
   const m = await cdp.eval(`({
     tiles: document.querySelectorAll('.lv').length,
     locked: document.querySelectorAll('.lv.locked').length,
     starred: document.querySelectorAll('.lv .stars svg.on').length,
+    chapter: document.querySelector('#chapter-label').textContent,
+    bonus: !!document.querySelector('#chapter-bonus'),
   })`);
-  eq(m.tiles, 60, 'tile count');
-  eq(m.locked, 58, 'locked tile count');
+  eq(m.tiles, 20, 'tile count (one chapter page)');
+  eq(m.locked, 18, 'locked tile count');
   eq(m.starred, 3, 'earned stars shown');
+  assert(String(m.chapter).includes('1/25'), `chapter label wrong: ${m.chapter}`);
+  assert(m.bonus, 'bonus challenge button missing');
   const shot = await cdp.shot('e2e-levels');
   void shot;
-  return `tiles=${m.tiles}, locked=${m.locked}, stars=${m.starred}`;
+  return `tiles=${m.tiles}, locked=${m.locked}, stars=${m.starred}, ${m.chapter}`;
 });
 
 await step('selecting a level starts it', async () => {
@@ -515,6 +580,7 @@ for (const [w, h] of [
     assert(m.sw <= m.iw + 1, `scrollWidth ${m.sw} > ${m.iw}`);
     assert(m.playR <= w + 1, `play button overflows (${m.playR})`);
     assert(m.navB <= h + 1, `nav overflows vertically (${m.navB})`);
+    await topUpEnergy();
     await cdp.eval("document.querySelector('#btn-play').click()");
     await sleep(500);
     await cdp.eval("(() => { const b = document.querySelector('#howto-ok'); if (b) b.click(); })()");
@@ -534,6 +600,7 @@ await step('60fps while playing', async () => {
   await cdp.viewport(430, 932, 3);
   await cdp.reload();
   await cdp.waitFor("document.querySelector('#btn-play')");
+  await topUpEnergy();
   await cdp.eval("document.querySelector('#btn-play').click()");
   await sleep(600);
   await cdp.eval("(() => { const b = document.querySelector('#howto-ok'); if (b) b.click(); })()");
@@ -573,11 +640,12 @@ await step('tap latency under 120ms', async () => {
 console.log('\n[E2E] level sweep in the real UI');
 await step('5 representative levels can be cleared end-to-end', async () => {
   const swept = [];
+  await topUpEnergy();
   for (const id of [1, 15, 30, 45, 60]) {
     await cdp.eval(`window.__arrowGame.startLevel(${id})`);
     await sleep(350);
     let taps = 0;
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 500; i++) {
       const s = await state();
       if (!s.running) break;
       const pos = await freePos();
@@ -593,6 +661,83 @@ await step('5 representative levels can be cleared end-to-end', async () => {
   await cdp.eval('window.__arrowGame.showHome()');
   await sleep(300);
   return swept.join(', ');
+});
+
+console.log('\n[E2E] energy & rewarded ads');
+await step('empty stamina blocks start and offers an ad grant (+1)', async () => {
+  await cdp.eval('window.__arrowGame.showHome()');
+  await sleep(300);
+  await cdp.eval(`(() => {
+    const g = window.__arrowGame;
+    g.save.energy = 0;
+    g.save.energyAt = Date.now();
+  })()`);
+  await cdp.eval("document.querySelector('#btn-play').click()");
+  await sleep(300);
+  const s0 = await state();
+  eq(s0.running, false, 'run must not start with 0 energy');
+  const modal = await cdp.eval("document.querySelector('#overlay').textContent");
+  assert(modal.includes('体力不足'), `energy modal missing: ${modal.slice(0, 60)}`);
+  assert(modal.includes('看广告 +1 体力'), 'energy modal should offer +1 per ad');
+  await cdp.eval("document.querySelector('#energy-ad').click()");
+  await watchAd();
+  eq(await energy(), 1, 'ad grants exactly +1 energy');
+  await sleep(200);
+  const overlayGone = await cdp.eval("document.querySelector('#overlay').classList.contains('is-hidden')");
+  assert(overlayGone, 'energy modal should close after the grant');
+  const pill = await cdp.eval("document.querySelector('#energy-count').textContent");
+  eq(pill, '1/5', 'energy pill shows 1/5 after ad');
+  // +1 体力刚好够开一关。
+  await cdp.eval("document.querySelector('#btn-play').click()");
+  await cdp.waitFor("window.__arrowGame && window.__arrowGame.debugState().running", 4000);
+  await sleep(200);
+  const s1 = await state();
+  eq(s1.running, true, '+1 energy is enough to start a level');
+  await cdp.shot('e2e-energy');
+  return 'blocked → ad → +1 → started a level';
+});
+
+await step('energy pill opens the stamina modal with countdown', async () => {
+  await cdp.eval('window.__arrowGame.showHome()');
+  await sleep(300);
+  await cdp.eval("document.querySelector('#btn-energy').click()");
+  await sleep(300);
+  const modal = await cdp.eval("document.querySelector('#overlay').textContent");
+  assert(modal.includes('体力'), `stamina modal missing: ${modal.slice(0, 60)}`);
+  await cdp.eval("document.querySelector('#energy-close').click()");
+  await sleep(200);
+  return 'pill modal ok';
+});
+
+await step('running out of hints offers an ad refill (+1)', async () => {
+  // 进入对局后把提示次数清零，点提示 → 看广告补充。
+  await topUpEnergy();
+  await cdp.eval("document.querySelector('#btn-play').click()");
+  await cdp.waitFor("window.__arrowGame && window.__arrowGame.debugState().running", 4000);
+  await sleep(400);
+  await cdp.eval('window.__arrowGame.save.hints = 0');
+  await cdp.eval("document.querySelector('#btn-hint').click()");
+  await sleep(300);
+  const modal = await cdp.eval("document.querySelector('#overlay').textContent");
+  assert(modal.includes('提示用完了'), `hint modal missing: ${modal.slice(0, 60)}`);
+  assert(modal.includes('看广告 +1 次'), 'hint modal should offer +1 per ad');
+  const badgeZero = await cdp.eval(
+    "document.querySelector('#hint-cost').classList.contains('zero')",
+  );
+  assert(badgeZero, 'hint badge should flag zero state');
+  await cdp.eval("document.querySelector('#hint-ad').click()");
+  await watchAd();
+  eq(await cdp.eval('window.__arrowGame.save.hints'), 1, 'ad grants exactly +1 hint');
+  await sleep(200);
+  const resumed = await cdp.eval('window.__arrowGame.paused');
+  eq(resumed, false, 'game resumes after the hint ad');
+  await cdp.eval("document.querySelector('#btn-hint').click()");
+  await sleep(250);
+  eq(await cdp.eval('window.__arrowGame.save.hints'), 0, 'hint usable again after refill');
+  const hintId = await cdp.eval('window.__arrowGame.hintId');
+  assert(hintId !== null && hintId !== undefined, 'hint not set after refill');
+  await cdp.shot('e2e-hints');
+  return 'ran out → ad → +1 hint → used it';
 });
 
 console.log('\n[E2E] console health');

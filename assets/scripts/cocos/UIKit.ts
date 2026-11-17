@@ -164,6 +164,7 @@ export interface ButtonOptions {
   iconSize?: number;
   onClick?: () => void;
   display?: boolean;
+  systemFont?: boolean;
 }
 
 export interface ButtonHandle {
@@ -212,6 +213,7 @@ export function makeButton(parent: Node, opts: ButtonOptions): ButtonHandle {
       width: w,
       height: h,
       name: 'btn-label',
+      display: opts.systemFont ? false : undefined,
     });
     if (iconNode) label.node.setPosition(w * 0.08, 0, 0);
   }
