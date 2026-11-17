@@ -1,0 +1,71 @@
+name: apple-signing-check
+
+# Dispatch-only diagnostic: verifies the Apple signing secrets are usable
+# without exporting any private key material. Writes a summary to the run page.
+# Run this first when TestFlight uploads fail with signing errors.
+#
+# No provisioning profile is used in this pipeline: the IPA is signed with
+# automatic signing + the ASC API key (xcodebuild registers the bundle ID and
+# creates/refreshes profiles itself). Only the distribution certificate and
+# the API key matter.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect signing credentials without exporting private keys
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERT_PASSWORD }}
+          API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing-check.keychain-db"
+          certificate="$RUNNER_TEMP/signing-check.p12"
+          keychain_password="$(openssl rand -hex 24)"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f "$certificate"
+          }
+          trap cleanup EXIT
+          {
+            echo '## Apple signing credentials'
+            if [[ -z "$CERTIFICATE_BASE64" || -z "$CERTIFICATE_PASSWORD" ]]; then
+              echo '- APPLE_DISTRIBUTION_CERT_P12 / _PASSWORD: MISSING'
+              exit 1
+            fi
+            echo '- certificate secrets: present'
+            printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            # The p12 comes from a macOS keychain export, which security import
+            # reads natively. (Re-encoding through openssl 3.5 silently drops
+            # the private keys - the import succeeds but find-identity sees 0.)
+            security import "$certificate" -P "$CERTIFICATE_PASSWORD" \
+              -k "$keychain" -T /usr/bin/codesign >/dev/null
+            security find-identity -v -p codesigning "$keychain" > "$RUNNER_TEMP/identities.txt" || true
+            cat "$RUNNER_TEMP/identities.txt"
+            if grep -q 'Apple Distribution:' "$RUNNER_TEMP/identities.txt"; then
+              echo '- Apple Distribution identity with private key: available'
+            else
+              echo '- Apple Distribution identity with private key: MISSING'
+              exit 1
+            fi
+            if [[ -n "$API_PRIVATE_KEY" && -n "$API_KEY_ID" && -n "$API_ISSUER" ]]; then
+              echo '- App Store Connect API secret fields: present (authentication not yet validated)'
+            else
+              echo '- App Store Connect API secret fields: incomplete'
+              exit 1
+            fi
+            echo '- all checks passed'
+          } 2>&1 | tee "$GITHUB_STEP_SUMMARY"

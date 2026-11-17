@@ -1,0 +1,7 @@
+First release of Arrow Clear (一箭清空).
+
+- 500 levels across 25 chapters, plus a bonus challenge stage
+- Tap an arrow, watch it fly — clear the whole board to win
+- Fewer wall hits earn more stars
+- Hints and energy refill via optional rewarded video
+- Playable offline, progress saved on device

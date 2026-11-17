@@ -10,3 +10,8 @@ web/main.js
 web/assetlab.js
 .DS_Store
 *.log
+export/
+release.env
+__pycache__/
+tests/artifacts/
+web/main.js.map
