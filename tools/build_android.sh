@@ -75,7 +75,15 @@ echo "== resolve Android SDK/NDK for Cocos"
 # paths instead. Resolve the newest installed NDK and write a resolved copy
 # of the build config into .tmp/ (gitignored — machine paths stay out of git).
 ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-ANDROID_NDK="${ANDROID_NDK:-$(find "$ANDROID_SDK/ndk" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)}"
+# Cocos 3.8.x supports NDK up to r27: r28's libc++ dropped
+# std::char_traits<unsigned char>, which the engine bindings still use.
+# Prefer the newest supported NDK; only fall back to the absolute newest
+# (with a warning) when nothing <= 27 is installed.
+ANDROID_NDK="${ANDROID_NDK:-$(find "$ANDROID_SDK/ndk" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | awk -F/ '$NF + 0 <= 27.99' | tail -1 || true)}"
+if [[ -z "$ANDROID_NDK" ]]; then
+	ANDROID_NDK="$(find "$ANDROID_SDK/ndk" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)"
+	[[ -n "$ANDROID_NDK" ]] && echo "::warning::only NDK r28+ found; Cocos 3.8.x supports up to r27 — build may fail"
+fi
 if [[ ! -d "$ANDROID_SDK" ]]; then
 	echo "Android SDK not found at $ANDROID_SDK (set ANDROID_HOME)" >&2
 	exit 1
@@ -123,8 +131,9 @@ echo "project: $PROJ_DIR"
 GRADLE_PROPS="$PROJ_DIR/gradle.properties"
 touch "$GRADLE_PROPS"
 set_prop() {
+	# | delimiter: keystore paths contain / and would break s///
 	if grep -q "^$1=" "$GRADLE_PROPS"; then
-		sed -i.bak "s/^$1=.*/$1=$2/" "$GRADLE_PROPS" && rm -f "$GRADLE_PROPS.bak"
+		sed -i.bak "s|^$1=.*|$1=$2|" "$GRADLE_PROPS" && rm -f "$GRADLE_PROPS.bak"
 	else
 		printf '%s=%s\n' "$1" "$2" >> "$GRADLE_PROPS"
 	fi
@@ -174,20 +183,19 @@ if [[ ! -x "$GRADLE" ]]; then
 	echo "no gradlew wrapper in $PROJ_DIR, using system gradle"
 fi
 
-# Gradle 8.x (the template wrapper) cannot run on very new JDKs; prefer a
-# 17/21 toolchain when the caller did not pick one (same approach as the
-# tungtungtung pipeline).
-if [[ -z "${JAVA_HOME:-}" ]]; then
-	for candidate in \
-		/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
-		/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home; do
-		if [[ -x "$candidate/bin/java" ]]; then
-			export JAVA_HOME="$candidate"
-			echo "JAVA_HOME: $candidate"
-			break
-		fi
-	done
-fi
+# Gradle 8.x (the template wrapper) cannot run on very new JDKs (class file
+# major 69 = JDK 25 fails hard). Prefer a 17/21 toolchain whenever one exists
+# — the ambient JAVA_HOME on dev machines is often too new. CI sets temurin
+# 17 via setup-java; a caller-set JAVA_HOME is only used as a last resort.
+for candidate in \
+	/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+	/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home; do
+	if [[ -x "$candidate/bin/java" ]]; then
+		export JAVA_HOME="$candidate"
+		break
+	fi
+done
+echo "JAVA_HOME: ${JAVA_HOME:-<ambient>}"
 
 echo "== gradle $STAGE build"
 rm -rf "$OUT_DIR"
