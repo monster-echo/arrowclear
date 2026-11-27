@@ -35,14 +35,8 @@ export interface Arrow {
   /** Facing direction of the arrow head. */
   dir: Dir;
   /**
-   * Frozen arrows cannot take off (but still block corridors) until 2
-   * distinct arrows adjacent to their body have flown away. Optional rule
-   * layer: absent/undefined behaves exactly like the classic game.
-   */
-  frozen?: boolean;
-  /**
    * Boss 箭（新算法阶段 1A）：双倍宽（身体每格右侧一格也是它的领地），
-   * 头部或头右侧任一条射线畅通即可飞（OR 语义），专属蓝色 + 大眼表情。
+   * 头部与头右侧两条射线必须同时畅通才能飞（AND 语义），专属蓝色 + 大眼表情。
    */
   isBoss?: boolean;
 }

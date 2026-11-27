@@ -1,5 +1,6 @@
 import {
   _decorator,
+  Camera,
   Color,
   Component,
   Graphics,
@@ -7,23 +8,27 @@ import {
   Node,
   ResolutionPolicy,
   Sprite,
+  UITransform,
+  Vec2,
   Vec3,
   view,
   tween,
   UIOpacity,
 } from 'cc';
 import {
+  BONUS_CHALLENGE_ID,
   CHAPTER_COUNT,
   CHAPTER_SIZE,
   LEVEL_COUNT,
   chapterOf,
-  getLevel,
   getLevelParts,
   isChallenge,
+  isMajorPicture,
+  isMinorPicture,
   isSprint,
   isZen,
-  levelName,
   stepOf,
+  worldOf,
 } from '../core/levels';
 import {
   ENERGY_MAX,
@@ -33,24 +38,29 @@ import {
   formatEnergyClock,
   grantEnergy,
   refundEnergy,
+  refillEnergy,
   spendEnergy,
   syncEnergy,
 } from '../core/energy';
 import { Arrow, Level } from '../core/types';
 import { Assets } from './Assets';
 import { BoardView } from './BoardView';
+import { I18n, Lang } from './I18n';
 import { loadSave, persist, SaveData, totalStars } from './SaveStore';
 import { Sfx } from './Sfx';
-import { ARROW_NAMES, C, FONT } from './Theme';
+import { BTN_STYLES, ButtonStyleName, C, WORLD_THEMES } from './Theme';
 import {
-  ButtonHandle,
+  bump,
+  makeBadge,
   makeButton,
   makeIcon,
   makeLabel,
   makePanel,
+  makeRibbon,
   makeSprite,
   newNode,
   popIn,
+  pulseIdle,
   setOpacity,
   setSize,
 } from './UIKit';
@@ -58,22 +68,28 @@ import { Platform } from './Platform';
 
 const { ccclass } = _decorator;
 
-/** 看一次激励广告补充的提示次数。 */
+/** Hints granted per rewarded ad. */
 const HINTS_PER_AD = 1;
+
+type RibbonTone = 'blue' | 'gold' | 'red' | 'green' | 'purple';
 
 interface ModalButton {
   text: string;
+  style?: ButtonStyleName;
   primary?: boolean;
+  icon?: string;
   onClick: () => void;
 }
 
 interface ModalOptions {
   title: string;
+  tone?: RibbonTone;
   lines?: string[];
   stars?: number;
   extraHeight?: number;
   content?: (panel: Node, topY: number) => void;
   buttons?: ModalButton[];
+  rowButtons?: ModalButton[];
 }
 
 @ccclass('GameRoot')
@@ -88,6 +104,7 @@ export class GameRoot extends Component {
   private game: Node | null = null;
   private levels: Node | null = null;
   private levelGrid: Node | null = null;
+  private chapterHeader: Node | null = null;
   private overlay: Node | null = null;
   private adLayer: Node | null = null;
   private toast: Node | null = null;
@@ -95,46 +112,60 @@ export class GameRoot extends Component {
 
   private board: BoardView | null = null;
   private boardNode: Node | null = null;
+  private boardMat: Node | null = null;
 
   private hudLevel: Label | null = null;
+  private modeBadgeWrap: Node | null = null;
   private timerLabel: Label | null = null;
   private timerNode: Node | null = null;
+  private heartsContainer: Node | null = null;
   private heartNodes: Node[] = [];
   private progressGfx: Graphics | null = null;
-  private progressW = 600;
+  private progressLabel: Label | null = null;
+  private progressW = 470;
   private hintBadge: Label | null = null;
+  private hintBadgeBg: Graphics | null = null;
   private zoomLabel: Label | null = null;
   private zoom = 1;
+
   private homeChip: Label | null = null;
+  private homeWorldLabel: Label | null = null;
+  private homeWorldBg: Graphics | null = null;
+  private homeStarLabel: Label | null = null;
   private levelsTotal: Label | null = null;
-  private soundIconNode: Node | null = null;
 
   private level: Level | null = null;
   private hearts = 3;
+  private heartMax = 3;
   private timeLeft = 0;
   private mistakes = 0;
   private running = false;
   private paused = false;
   private adPlaying = false;
-  private energyPill: ButtonHandle | null = null;
+  private energyLabel: Label | null = null;
+  private energyNextBadge: Node | null = null;
   private energyNextLabel: Label | null = null;
   private energyTick = 0;
   private hintId: number | null = null;
   private hintUntil = 0;
   private clock = 0;
-  // —— 500 关结构运行态 ——
-  /** Boss 三连打（规则书 §5）：本关的部件队列与当前下标。 */
+
   private bossParts: Level[] = [];
   private bossIndex = 0;
-  /** 本次尝试链内已复活次数（规则书 §10 递增方案）。 */
   private reviveCount = 0;
-  /** 进入当前盘面时的撞墙数快照（Boss 重开当前小关时回退到这里）。 */
   private mistakesBase = 0;
-  /** 冻结箭提示 toast 的节流时钟。 */
-  private frozenToastAt = -10;
-  /** 关卡选择页当前显示的章（1..25）。 */
   private chapterPage = 1;
-  private chapterLabel: Label | null = null;
+
+  // ---------------------------------------------------------------- helpers
+
+  private worldTitle(wIdx: number): string {
+    const wt = WORLD_THEMES[Math.max(0, Math.min(WORLD_THEMES.length - 1, wIdx))];
+    return I18n.lang === 'zh' ? wt.zhName : wt.enName;
+  }
+
+  private formatLevelTitle(id: number): string {
+    return isChallenge(id) ? I18n.t('tower1000') : I18n.t('levelN', { n: id });
+  }
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -143,31 +174,72 @@ export class GameRoot extends Component {
     const size = view.getVisibleSize();
     this.W = size.width;
     this.H = size.height;
+    setSize(this.node, this.W, this.H);
+
+    const canvasNode = this.node.parent;
+    if (canvasNode) {
+      setSize(canvasNode, this.W, this.H);
+      const camNode = canvasNode.getChildByName('Camera');
+      const cam = camNode?.getComponent(Camera);
+      if (cam) {
+        cam.projection = Camera.ProjectionType.ORTHO;
+        cam.orthoHeight = this.H / 2;
+        camNode?.setPosition(0, 0, 1000);
+      }
+    }
 
     this.save = loadSave();
+    I18n.setLang(this.save.lang);
     this.sfx.enabled = this.save.sound;
     this.sfx.attach(this.node);
 
-    const loading = makeLabel(this.node, '加载中…', 30, C.inkSoft, { name: 'loading' });
+    const loading = makeLabel(this.node, I18n.t('loading'), 32, C.white, {
+      name: 'loading',
+      outlineColor: C.royalDark,
+      outlineWidth: 3,
+    });
 
     void Assets.preload().then(() => {
       loading.node.destroy();
-      this.build();
+      this.buildAll();
+      this.showHome();
     });
   }
 
-  private build(): void {
+  private buildAll(): void {
     this.buildBackground();
+    this.buildScreens();
+  }
+
+  private buildScreens(): void {
+    this.home?.destroy();
+    this.game?.destroy();
+    this.levels?.destroy();
+    this.overlay?.destroy();
+    this.toast?.destroy();
+    this.home = null;
+    this.game = null;
+    this.levels = null;
+    this.overlay = null;
+    this.toast = null;
+
     this.buildHome();
     this.buildGame();
     this.buildLevels();
     this.buildOverlay();
     this.buildToast();
+  }
+
+  private switchLanguage(nextLang: Lang): void {
+    this.save.lang = nextLang;
+    I18n.setLang(nextLang);
+    persist(this.save);
+    this.buildScreens();
     this.showHome();
+    this.showSettings();
   }
 
   protected update(dt: number): void {
-    // 体力倒计时与离线恢复：不在对局中时每半秒刷一次体力条。
     if (!this.running) {
       this.energyTick -= dt;
       if (this.energyTick <= 0) {
@@ -182,7 +254,6 @@ export class GameRoot extends Component {
     this.timeLeft -= dt;
     if (this.timeLeft < 0) this.timeLeft = 0;
     this.updateTimer();
-    // 禅意关（规则书 §5）无时限：timeLimit 0 时不判负。
     if (this.level && this.level.timeLimit > 0 && this.timeLeft <= 0) {
       this.lose('time');
       return;
@@ -199,10 +270,18 @@ export class GameRoot extends Component {
   private buildBackground(): void {
     const n = newNode('background', this.node);
     n.setPosition(0, 0, 0);
-    const g = n.addComponent(Graphics);
-    g.fillColor = new Color(245, 246, 250, 255);
-    g.rect(-this.W / 2, -this.H / 2, this.W, this.H);
-    g.fill();
+    const bgFrame = Assets.frame('bg');
+    if (bgFrame) {
+      const aspect = 720 / 1560;
+      const drawW = Math.max(this.W, this.H * aspect);
+      const drawH = Math.max(this.H, this.W / aspect);
+      makeSprite(n, bgFrame, drawW, drawH, 'bg-sprite');
+    } else {
+      const g = n.addComponent(Graphics);
+      g.fillColor = C.skyMid;
+      g.rect(-this.W / 2, -this.H / 2, this.W, this.H);
+      g.fill();
+    }
   }
 
   // ---------------------------------------------------------------- home
@@ -213,132 +292,238 @@ export class GameRoot extends Component {
     this.home = home;
 
     const top = this.H / 2;
+    const bot = -this.H / 2;
+
+    const topY = top - 78;
 
     const gear = makeButton(home, {
-      w: 96,
-      h: 96,
+      w: 84,
+      h: 84,
       radius: 26,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 38),
-      shadowOffset: 6,
+      style: 'blue',
+      shadowOffset: 7,
       icon: 'gear',
-      iconSize: 50,
+      iconSize: 46,
       onClick: () => {
         this.sfx.play('click');
         this.showSettings();
       },
     });
-    gear.node.setPosition(-this.W / 2 + 78, top - 78, 0);
+    gear.node.setPosition(-this.W / 2 + 68, topY, 0);
 
-    // 体力条（右上）：点击弹体力说明 + 看广告补体力。
-    const energyPill = makeButton(home, {
-      w: 236,
-      h: 80,
-      radius: 40,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 34),
-      shadowOffset: 6,
-      icon: 'bolt',
-      iconSize: 40,
-      text: `${ENERGY_MAX}/${ENERGY_MAX}`,
-      textSize: 32,
-      textColor: C.ink,
-      onClick: () => {
-        this.sfx.play('click');
-        this.showEnergyModal(false);
-      },
+    // Star total pill
+    const starPill = makePanel(home, 174, 64, {
+      radius: 32,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 5,
+      border: C.white,
+      borderWidth: 3.5,
+      shadow: new Color(10, 32, 68, 60),
+      shadowOffset: 9,
     });
-    energyPill.node.setPosition(this.W / 2 - 128, top - 78, 0);
-    energyPill.label?.node.setPosition(-14, 0, 0);
-    this.energyPill = energyPill;
-    this.energyNextLabel = makeLabel(energyPill.node, '', 18, C.inkSoft, {
-      width: 74,
-      height: 40,
+    starPill.setPosition(this.W / 2 - 318, topY, 0);
+    makeIcon(starPill, 'star', 42).setPosition(-54, 1, 0);
+    this.homeStarLabel = makeLabel(starPill, '0', 30, C.goldText, {
+      width: 100,
+      height: 44,
     });
-    this.energyNextLabel.node.setPosition(74, 0, 0);
+    this.homeStarLabel.node.setPosition(20, 1, 0);
 
-    const logoFrame = Assets.frame('logo');
-    const logoW = Math.min(600, this.W * 0.84);
+    // Energy pill
+    const energyPill = makePanel(home, 188, 64, {
+      radius: 32,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 5,
+      border: C.white,
+      borderWidth: 3.5,
+      shadow: new Color(10, 32, 68, 60),
+      shadowOffset: 9,
+    });
+    energyPill.setPosition(this.W / 2 - 120, topY, 0);
+    makeIcon(energyPill, 'bolt', 42).setPosition(-58, 1, 0);
+    this.energyLabel = makeLabel(energyPill, `${ENERGY_MAX}/${ENERGY_MAX}`, 29, C.ink, {
+      width: 108,
+      height: 44,
+    });
+    this.energyLabel.node.setPosition(16, 1, 0);
+    energyPill.on(Node.EventType.TOUCH_START, () => energyPill.setScale(0.96, 0.94, 1));
+    energyPill.on(Node.EventType.TOUCH_END, () => {
+      energyPill.setScale(1, 1, 1);
+      this.sfx.play('click');
+      this.showEnergyModal(false);
+    });
+    energyPill.on(Node.EventType.TOUCH_CANCEL, () => energyPill.setScale(1, 1, 1));
+
+    const nextBadge = makeBadge(home, '', C.royalDark, C.goldLight, 118, 30, 18, C.royalRim);
+    nextBadge.node.setPosition(this.W / 2 - 120, topY - 48, 0);
+    nextBadge.node.active = false;
+    this.energyNextBadge = nextBadge.node;
+    this.energyNextLabel = nextBadge.label;
+
+    // 3D Western-Casual Game Logo (English default, switches to logo-zh in Chinese)
+    const isZh = I18n.lang === 'zh';
+    const logoFrame = Assets.frame(isZh ? 'logo-zh' : 'logo') ?? Assets.frame('logo');
+    const logoW = Math.min(640, this.W * 0.9);
+    const logoH = logoW * (isZh ? 320 / 980 : 360 / 980);
     if (logoFrame) {
-      const logo = makeSprite(home, logoFrame, logoW, logoW * (150 / 490), 'logo');
-      logo.node.setPosition(0, top - this.H * 0.17, 0);
-    } else {
-      makeLabel(home, '一箭清空', 96, C.orange).node.setPosition(0, top - this.H * 0.17, 0);
-    }
-
-    const mascotFrame = Assets.frame('mascot');
-    if (mascotFrame) {
-      const mascot = makeSprite(home, mascotFrame, logoW * 0.84, logoW * 0.84 * (270 / 300), 'mascot');
-      const baseY = top - this.H * 0.43;
-      mascot.node.setPosition(0, baseY, 0);
-      tween(mascot.node)
+      const logo = makeSprite(home, logoFrame, logoW, logoH, 'logo');
+      const ly = top - this.H * 0.2;
+      logo.node.setPosition(0, ly, 0);
+      tween(logo.node)
         .repeatForever(
-          tween(mascot.node)
-            .to(1.8, { position: new Vec3(0, baseY + 16, 0) }, { easing: 'sineInOut' })
-            .to(1.8, { position: new Vec3(0, baseY, 0) }, { easing: 'sineInOut' }),
+          tween(logo.node)
+            .to(2.1, { position: new Vec3(0, ly + 8, 0) }, { easing: 'sineInOut' })
+            .to(2.1, { position: new Vec3(0, ly, 0) }, { easing: 'sineInOut' }),
         )
         .start();
     }
 
-    const chip = makePanel(home, 220, 62, { radius: 31, fill: new Color(255, 255, 255, 190) });
-    chip.setPosition(0, top - this.H * 0.675, 0);
-    this.homeChip = makeLabel(chip, '第 1 关', 32, C.inkSoft, { width: 220, height: 62 });
-    this.homeChip.node.setPosition(0, 0, 0);
+    // Glowing sunlit pedestal stage behind hero mascot
+    const heroY = top - this.H * 0.455;
+    const stageNode = newNode('hero-stage', home);
+    stageNode.setPosition(0, heroY, 0);
+    const sg = stageNode.addComponent(Graphics);
+    sg.fillColor = new Color(255, 255, 255, 42);
+    sg.circle(0, 0, 192);
+    sg.fill();
+    sg.fillColor = new Color(255, 252, 232, 85);
+    sg.circle(0, 0, 148);
+    sg.fill();
+    sg.strokeColor = new Color(255, 232, 130, 165);
+    sg.lineWidth = 5;
+    sg.circle(0, 0, 148);
+    sg.stroke();
 
-    const play = makeButton(home, {
-      w: Math.min(640, this.W * 0.88),
-      h: 124,
-      radius: 34,
-      fill: C.blue,
-      fillTop: new Color(255, 255, 255, 40),
-      shadow: C.blueDark,
-      shadowOffset: 9,
-      text: '开始游戏',
-      textSize: 52,
-      icon: 'play',
-      iconSize: 60,
-      onClick: () => this.startLevel(Math.min(this.save.unlocked, LEVEL_COUNT), true),
+    const mascotFrame = Assets.frame('mascot');
+    if (mascotFrame) {
+      const mw = Math.min(416, this.W * 0.6);
+      const mascot = makeSprite(home, mascotFrame, mw, mw * (580 / 640), 'mascot');
+      mascot.node.setPosition(0, heroY + 6, 0);
+      tween(mascot.node)
+        .repeatForever(
+          tween(mascot.node)
+            .to(1.65, { position: new Vec3(0, heroY + 22, 0), scale: new Vec3(1.03, 0.98, 1) }, { easing: 'sineInOut' })
+            .to(1.65, { position: new Vec3(0, heroY + 4, 0), scale: new Vec3(0.99, 1.02, 1) }, { easing: 'sineInOut' }),
+        )
+        .start();
+    }
+
+    // World & Next Level indicator pill
+    const chipY = top - this.H * 0.66;
+    const worldPill = newNode('home-world-pill', home);
+    setSize(worldPill, 420, 56);
+    worldPill.setPosition(0, chipY, 0);
+    this.homeWorldBg = worldPill.addComponent(Graphics);
+    this.homeWorldLabel = makeLabel(worldPill, this.worldTitle(0), 21, C.white, {
+      width: 220,
+      height: 40,
+      outlineColor: C.royalDark,
+      outlineWidth: 3,
     });
-    play.node.setPosition(0, top - this.H * 0.755, 0);
+    this.homeWorldLabel.node.setPosition(-88, 1, 0);
 
-    makeLabel(home, '点一下，箭头就会飞出去', 24, new Color(22, 61, 92, 120), {
-      width: 600,
-      height: 34,
-    }).node.setPosition(0, top - this.H * 0.835, 0);
+    const lvPill = makePanel(worldPill, 164, 44, {
+      radius: 22,
+      fill: C.cream,
+      border: C.white,
+      borderWidth: 2,
+    });
+    lvPill.setPosition(116, 1, 0);
+    this.homeChip = makeLabel(lvPill, this.formatLevelTitle(1), 24, C.ink, { width: 154, height: 40 });
+    this.homeChip.node.setPosition(0, 1, 0);
 
-    const navY = -this.H / 2 + this.H * 0.115;
-    const navs: { icon: string; text: string; onClick: () => void }[] = [
-      { icon: 'levels', text: '关卡', onClick: () => this.showLevels() },
-      { icon: 'help', text: '玩法', onClick: () => this.showHowto() },
+    // Giant Juicy Emerald 3D Play CTA
+    const play = makeButton(home, {
+      w: Math.min(580, this.W * 0.82),
+      h: 118,
+      radius: 36,
+      style: 'green',
+      shadowOffset: 10,
+      text: I18n.t('play'),
+      textSize: 50,
+      icon: 'play',
+      iconSize: 50,
+      onClick: () => {
+        this.sfx.play('click');
+        this.startLevel(Math.min(this.save.unlocked, LEVEL_COUNT), true);
+      },
+    });
+    play.node.setPosition(0, top - this.H * 0.758, 0);
+    pulseIdle(play.node, 0.026, 1.8);
+
+    // Bottom 3-button Western casual action dock
+    const navY = bot + this.H * 0.118;
+    const navs: { icon: string; text: string; style: ButtonStyleName; onClick: () => void }[] = [
+      { icon: 'levels', text: I18n.t('levels'), style: 'blue', onClick: () => this.showLevels() },
+      {
+        icon: 'star',
+        text: I18n.t('challenge'),
+        style: 'purple',
+        onClick: () => this.startLevel(BONUS_CHALLENGE_ID, true),
+      },
+      { icon: 'help', text: I18n.t('howToPlay'), style: 'gold', onClick: () => this.showHowto() },
     ];
     navs.forEach((item, i) => {
-      const x = (i - (navs.length - 1) / 2) * 220;
+      const x = (i - 1) * 196;
       const b = makeButton(home, {
-        w: 108,
-        h: 108,
-        radius: 30,
-        fill: C.white,
-        shadow: new Color(30, 80, 110, 32),
-        shadowOffset: 6,
+        w: 166,
+        h: 112,
+        radius: 28,
+        style: item.style,
+        shadowOffset: 8,
         icon: item.icon,
-        iconSize: 56,
+        iconSize: 48,
         onClick: () => {
           this.sfx.play('click');
           item.onClick();
         },
       });
       b.node.setPosition(x, navY, 0);
-      makeLabel(home, item.text, 24, C.inkSoft, { width: 140, height: 34 }).node.setPosition(
-        x,
-        navY - 76,
-        0,
-      );
+      if (b.icon) b.icon.setPosition(0, 16, 0);
+      makeLabel(b.node, item.text, 20, C.white, {
+        width: 158,
+        height: 30,
+        outlineColor: BTN_STYLES[item.style].outline,
+        outlineWidth: 3,
+      }).node.setPosition(0, -30, 0);
     });
 
-    makeLabel(home, 'v0.1.0  ·  Cocos Creator 3.8', 18, new Color(22, 61, 92, 90), {
-      width: 500,
-      height: 26,
-    }).node.setPosition(0, -this.H / 2 + 26, 0);
+    makeLabel(home, 'v1.0', 18, new Color(255, 255, 255, 165), {
+      width: 200,
+      height: 24,
+      display: false,
+    }).node.setPosition(0, bot + 24, 0);
+  }
+
+  private paintHomeWorldPill(levelId: number): void {
+    const g = this.homeWorldBg;
+    if (!g) return;
+    const wIdx = Math.max(0, Math.min(WORLD_THEMES.length - 1, worldOf(levelId) - 1));
+    const theme = WORLD_THEMES[wIdx];
+    const w = 420;
+    const h = 56;
+    const r = h / 2 - 1;
+    g.clear();
+    g.fillColor = new Color(10, 30, 62, 65);
+    g.roundRect(-w / 2, -h / 2 - 5, w, h, r);
+    g.fill();
+    g.fillColor = theme.bannerDark;
+    g.roundRect(-w / 2, -h / 2 - 3, w, h, r);
+    g.fill();
+    g.fillColor = theme.banner;
+    g.roundRect(-w / 2, -h / 2, w, h, r);
+    g.fill();
+    g.lineWidth = 3;
+    g.strokeColor = C.white;
+    g.roundRect(-w / 2, -h / 2, w, h, r);
+    g.stroke();
+
+    if (this.homeWorldLabel) {
+      this.homeWorldLabel.string = this.worldTitle(wIdx);
+      this.homeWorldLabel.outlineColor = theme.bannerDark;
+    }
   }
 
   // ---------------------------------------------------------------- game screen
@@ -349,155 +534,313 @@ export class GameRoot extends Component {
     this.game = game;
 
     const top = this.H / 2;
+    const bot = -this.H / 2;
 
+    // Top Royal-Blue Glossy Header Dock
+    const headerH = 212;
+    const header = newNode('hud-dock', game);
+    header.setPosition(0, top - headerH / 2, 0);
+    const hg = header.addComponent(Graphics);
+    hg.fillColor = new Color(8, 28, 60, 82);
+    hg.roundRect(-this.W / 2 - 6, -headerH / 2 - 12, this.W + 12, headerH + 28, 34);
+    hg.fill();
+    hg.fillColor = C.royalDark;
+    hg.roundRect(-this.W / 2 - 4, -headerH / 2 - 6, this.W + 8, headerH + 28, 34);
+    hg.fill();
+    hg.fillColor = C.royal;
+    hg.roundRect(-this.W / 2 - 4, -headerH / 2, this.W + 8, headerH + 28, 32);
+    hg.fill();
+    hg.fillColor = C.royalTop;
+    hg.rect(-this.W / 2, 10, this.W, headerH / 2 + 10);
+    hg.fill();
+    hg.lineWidth = 3.5;
+    hg.strokeColor = C.royalRim;
+    hg.roundRect(-this.W / 2 - 4, -headerH / 2, this.W + 8, headerH + 28, 32);
+    hg.stroke();
+
+    // Pause button (top-left)
     const pause = makeButton(game, {
-      w: 92,
-      h: 92,
-      radius: 26,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 34),
+      w: 78,
+      h: 78,
+      radius: 24,
+      style: 'blue',
       shadowOffset: 6,
       icon: 'pause',
-      iconSize: 44,
-      onClick: () => this.showPause(),
+      iconSize: 38,
+      onClick: () => {
+        this.sfx.play('click');
+        this.showPause();
+      },
     });
-    pause.node.setPosition(-this.W / 2 + 72, top - 76, 0);
+    pause.node.setPosition(-this.W / 2 + 64, top - 64, 0);
 
-    this.hudLevel = makeLabel(game, '第 1 关', FONT.title, C.ink, { width: 420, height: 76 });
-    this.hudLevel.node.setPosition(0, top - this.H * 0.095, 0);
+    // Level Title (top-center)
+    this.hudLevel = makeLabel(game, this.formatLevelTitle(1), 40, C.white, {
+      width: 300,
+      height: 56,
+      outlineColor: C.royalDark,
+      outlineWidth: 4,
+      shadowColor: new Color(0, 0, 0, 75),
+      shadowOffset: new Vec2(0, -3),
+    });
+    this.hudLevel.node.setPosition(-12, top - 58, 0);
 
-    const hearts = newNode('hearts', game);
-    this.heartNodes = [];
-    for (let i = 0; i < 3; i++) {
-      const h = makeIcon(hearts, 'heart', 44);
-      h.setPosition(i * 50 - 50, 0, 0);
-      this.heartNodes.push(h);
-    }
-    hearts.setPosition(-120, top - this.H * 0.138, 0);
+    // Mode / World pill badge (top-right)
+    this.modeBadgeWrap = newNode('mode-badge', game);
+    this.modeBadgeWrap.setPosition(this.W / 2 - 104, top - 62, 0);
 
-    const timerWrap = newNode('timer', game);
-    makeIcon(timerWrap, 'clock', 34).setPosition(-58, 0, 0);
-    this.timerLabel = makeLabel(timerWrap, '02:00', 32, C.inkSoft, { width: 110, height: 40 });
-    this.timerLabel.node.setPosition(12, 0, 0);
-    timerWrap.setPosition(90, top - this.H * 0.138, 0);
-    this.timerNode = timerWrap;
+    // Row 2: Hearts tray + Clock timer pill
+    const row2Y = top - 122;
+    this.heartsContainer = newNode('hearts-box', game);
+    this.heartsContainer.setPosition(-122, row2Y, 0);
+    this.rebuildHeartIcons(3);
 
-    const barW = Math.min(this.W - 100, 640);
+    const timerPill = makePanel(game, 174, 46, {
+      radius: 23,
+      fill: C.royalDark,
+      border: C.royalRim,
+      borderWidth: 2.5,
+    });
+    timerPill.setPosition(128, row2Y, 0);
+    makeIcon(timerPill, 'clock', 34).setPosition(-58, 0, 0);
+    this.timerLabel = makeLabel(timerPill, '02:00', 26, C.white, {
+      width: 102,
+      height: 36,
+      outlineColor: new Color(8, 24, 54, 255),
+      outlineWidth: 2,
+    });
+    this.timerLabel.node.setPosition(18, 0, 0);
+    this.timerNode = timerPill;
+
+    // Row 3: Progress Bar + cleared count
+    const barY = top - 178;
+    const barW = Math.min(this.W - 210, 480);
     this.progressW = barW;
-    const bar = makePanel(game, barW, 12, { radius: 6, fill: new Color(255, 255, 255, 160) });
-    bar.setPosition(0, top - this.H * 0.162, 0);
-    const fill = newNode('fill', bar);
-    setSize(fill, barW, 12);
+    const barTrack = makePanel(game, barW + 8, 26, {
+      radius: 13,
+      fill: C.royalDark,
+      border: new Color(115, 200, 255, 160),
+      borderWidth: 2,
+    });
+    barTrack.setPosition(-46, barY, 0);
+    const fill = newNode('fill', barTrack);
+    setSize(fill, barW, 18);
     this.progressGfx = fill.addComponent(Graphics);
     this.drawProgress(0);
 
+    this.progressLabel = makeLabel(game, '0/0', 22, C.goldLight, {
+      width: 108,
+      height: 32,
+      outlineColor: C.royalDark,
+      outlineWidth: 2,
+    });
+    this.progressLabel.node.setPosition(barW / 2 + 16, barY, 0);
+
+    // Framed Warm-Cream Puzzle Stage Mat
+    this.boardMat = newNode('board-mat', game);
     this.boardNode = newNode('board', game);
     this.board = this.boardNode.addComponent(BoardView);
-    this.boardNode.setPosition(0, 0, 0);
     this.board.onArrowCleared = (arrow) => this.onCleared(arrow);
     this.board.onArrowBlocked = (arrow, blocker) => this.onBlocked(arrow, blocker);
-    this.board.onFrozenTap = (arrow) => this.onFrozenTap(arrow);
 
-    const toolY = -this.H / 2 + this.H * 0.075;
-    const tools: {
-      icon: string;
-      text: string;
-      x: number;
-      onClick: () => void;
-      badge?: boolean;
-    }[] = [
-      { icon: 'bulb', text: '提示', x: -232, onClick: () => this.useHint(), badge: true },
-      { icon: 'restart', text: '重来', x: 232, onClick: () => this.confirmRestart() },
-    ];
-    tools.forEach((item) => {
-      const x = item.x;
-      const b = makeButton(game, {
-        w: 118,
-        h: 118,
-        radius: 32,
-        fill: C.white,
-        shadow: new Color(30, 80, 110, 34),
-        shadowOffset: 6,
-        icon: item.icon,
-        iconSize: 58,
-        onClick: () => {
-          this.sfx.play('click');
-          item.onClick();
-        },
-      });
-      b.node.setPosition(x, toolY, 0);
-      makeLabel(game, item.text, 22, C.inkSoft, { width: 140, height: 30 }).node.setPosition(
-        x,
-        toolY - 82,
-        0,
-      );
-      if (item.badge) {
-        const badge = makePanel(b.node, 64, 40, { radius: 20, fill: C.yellow });
-        badge.setPosition(42, 46, 0);
-        this.hintBadge = makeLabel(badge, '3', 22, new Color(122, 76, 0, 255), {
-          width: 64,
-          height: 40,
-        });
-        this.hintBadge.node.setPosition(0, 0, 0);
-      }
+    // Bottom Floating Glossy Control Dock
+    const dockY = bot + 86;
+    const dockW = Math.min(this.W - 36, 672);
+    const dock = makePanel(game, dockW, 122, {
+      radius: 36,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 8,
+      border: C.white,
+      borderWidth: 4,
+      shadow: new Color(10, 32, 68, 72),
+      shadowOffset: 14,
     });
+    dock.setPosition(0, dockY, 0);
 
-    const zoomMinus = makeButton(game, {
-      w: 66,
-      h: 66,
-      radius: 33,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 30),
+    // Hint Button (Gold 3D)
+    const hintBtn = makeButton(dock, {
+      w: 158,
+      h: 84,
+      radius: 26,
+      style: 'gold',
+      shadowOffset: 7,
+      icon: 'bulb',
+      iconSize: 38,
+      text: I18n.t('hint'),
+      textSize: 26,
+      onClick: () => {
+        this.sfx.play('click');
+        this.useHint();
+      },
+    });
+    hintBtn.node.setPosition(-dockW / 2 + 100, 2, 0);
+
+    const badgeNode = newNode('hint-badge', hintBtn.node);
+    badgeNode.setPosition(70, 36, 0);
+    this.hintBadgeBg = badgeNode.addComponent(Graphics);
+    this.hintBadge = makeLabel(badgeNode, '3', 22, C.white, {
+      width: 54,
+      height: 36,
+      outlineColor: new Color(90, 20, 15, 255),
+      outlineWidth: 2,
+    });
+    this.hintBadge.node.setPosition(0, 1, 0);
+
+    // Center Zoom Capsule
+    const zoomWrap = makePanel(dock, 240, 78, {
+      radius: 39,
+      fill: C.boardFrame,
+      border: C.white,
+      borderWidth: 2.5,
+    });
+    zoomWrap.setPosition(0, 0, 0);
+
+    const zoomMinus = makeButton(zoomWrap, {
+      w: 60,
+      h: 60,
+      radius: 30,
+      style: 'cream',
       shadowOffset: 4,
       text: '−',
-      textSize: 40,
-      textColor: C.ink,
+      textSize: 38,
       systemFont: true,
       onClick: () => this.zoomBoard(0.86),
     });
-    zoomMinus.node.setPosition(-54, toolY, 0);
-    const zoomPlus = makeButton(game, {
-      w: 66,
-      h: 66,
-      radius: 33,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 30),
+    zoomMinus.node.setPosition(-80, 2, 0);
+
+    const zoomReset = newNode('zoom-reset', zoomWrap);
+    setSize(zoomReset, 90, 54);
+    this.zoomLabel = makeLabel(zoomReset, '100%', 23, C.ink, {
+      width: 90,
+      height: 34,
+      display: false,
+      bold: true,
+    });
+    zoomReset.on(Node.EventType.TOUCH_END, () => this.resetZoom());
+
+    const zoomPlus = makeButton(zoomWrap, {
+      w: 60,
+      h: 60,
+      radius: 30,
+      style: 'cream',
       shadowOffset: 4,
       text: '+',
-      textSize: 38,
-      textColor: C.ink,
+      textSize: 36,
       systemFont: true,
       onClick: () => this.zoomBoard(1.16),
     });
-    zoomPlus.node.setPosition(54, toolY, 0);
-    this.zoomLabel = makeLabel(game, '100%', 20, C.inkSoft, {
-      width: 100,
-      height: 26,
-      display: false,
+    zoomPlus.node.setPosition(80, 2, 0);
+
+    // Restart Button (Blue 3D)
+    const restartBtn = makeButton(dock, {
+      w: 158,
+      h: 84,
+      radius: 26,
+      style: 'blue',
+      shadowOffset: 7,
+      icon: 'restart',
+      iconSize: 34,
+      text: I18n.t('restart'),
+      textSize: I18n.lang === 'en' ? 23 : 26,
+      onClick: () => {
+        this.sfx.play('click');
+        this.confirmRestart();
+      },
     });
-    this.zoomLabel.node.setPosition(0, toolY - 50, 0);
-    makeLabel(game, '缩放', 18, C.inkFaint, {
-      width: 100,
-      height: 24,
-      display: false,
-    }).node.setPosition(0, toolY - 74, 0);
+    restartBtn.node.setPosition(dockW / 2 - 100, 2, 0);
 
     game.active = false;
+  }
+
+  private rebuildHeartIcons(max: number): void {
+    const box = this.heartsContainer;
+    if (!box) return;
+    box.removeAllChildren();
+    this.heartNodes = [];
+    const spacing = max > 3 ? 38 : 48;
+    const size = max > 3 ? 36 : 44;
+    for (let i = 0; i < max; i++) {
+      const h = makeIcon(box, 'heart', size);
+      h.setPosition((i - (max - 1) / 2) * spacing, 0, 0);
+      this.heartNodes.push(h);
+    }
+  }
+
+  private paintBoardMat(cx: number, cy: number, bw: number, bh: number): void {
+    const mat = this.boardMat;
+    if (!mat) return;
+    mat.setPosition(cx, cy, 0);
+    const padX = 22;
+    const padY = 22;
+    const mw = Math.min(this.W - 28, bw + padX * 2);
+    const mh = bh + padY * 2;
+    setSize(mat, mw, mh);
+    const g = mat.getComponent(Graphics) || mat.addComponent(Graphics);
+    g.clear();
+    const r = 32;
+
+    g.fillColor = new Color(11, 36, 74, 65);
+    g.roundRect(-mw / 2, -mh / 2 - 12, mw, mh, r);
+    g.fill();
+    g.fillColor = C.boardFrameDark;
+    g.roundRect(-mw / 2, -mh / 2 - 6, mw, mh, r);
+    g.fill();
+    g.fillColor = C.boardMat;
+    g.roundRect(-mw / 2, -mh / 2, mw, mh, r);
+    g.fill();
+    g.lineWidth = 4;
+    g.strokeColor = C.white;
+    g.roundRect(-mw / 2, -mh / 2, mw, mh, r);
+    g.stroke();
+  }
+
+  private updateModeBadge(level: Level): void {
+    const wrap = this.modeBadgeWrap;
+    if (!wrap) return;
+    wrap.removeAllChildren();
+
+    if (this.bossParts.length > 1) {
+      makeBadge(
+        wrap,
+        I18n.t('modeBoss', { n: this.bossIndex + 1 }),
+        C.red,
+        C.white,
+        156,
+        40,
+        19,
+        C.redDark,
+      );
+    } else if (isChallenge(level.id)) {
+      makeBadge(wrap, I18n.t('modeChallenge'), C.purple, C.white, 152, 40, 19, C.purpleDark);
+    } else if (isSprint(level.id)) {
+      makeBadge(wrap, I18n.t('modeSprint'), C.orange, C.white, 142, 40, 19, C.orangeDark);
+    } else if (isZen(level.id)) {
+      makeBadge(wrap, I18n.t('modeZen'), C.green, C.white, 134, 40, 19, C.greenDark);
+    } else if (isMajorPicture(level.id) || isMinorPicture(level.id)) {
+      makeBadge(wrap, I18n.t('modeArt'), C.purple, C.white, 126, 40, 19, C.purpleDark);
+    } else {
+      const wIdx = Math.max(0, Math.min(WORLD_THEMES.length - 1, worldOf(level.id) - 1));
+      const wt = WORLD_THEMES[wIdx];
+      makeBadge(wrap, this.worldTitle(wIdx), wt.banner, C.white, 166, 38, 17, wt.bannerDark);
+    }
   }
 
   private drawProgress(ratio: number): void {
     const g = this.progressGfx;
     if (!g) return;
     const w = this.progressW;
-    const h = 12;
+    const h = 18;
     g.clear();
-    const fw = Math.max(0, Math.min(1, ratio)) * w;
-    if (fw <= 0) return;
-    g.fillColor = new Color(255, 190, 70, 255);
-    g.roundRect(-w / 2, -h / 2, fw, h, h / 2);
+    const clamped = Math.max(0, Math.min(1, ratio));
+    const fw = clamped * w;
+    if (fw <= 2) return;
+    const r = Math.max(0, Math.min(h / 2 - 1, fw / 2 - 1));
+    g.fillColor = clamped >= 0.99 ? C.green : C.yellow;
+    g.roundRect(-w / 2, -h / 2, fw, h, r);
     g.fill();
-    g.fillColor = new Color(255, 215, 110, 255);
-    g.roundRect(-w / 2, -h / 2, fw, h * 0.6, h * 0.3);
+    g.fillColor = new Color(255, 255, 255, 115);
+    g.roundRect(-w / 2 + 2, 1, Math.max(0, fw - 4), h * 0.36, Math.max(0, r * 0.6));
     g.fill();
   }
 
@@ -508,165 +851,310 @@ export class GameRoot extends Component {
     setSize(root, this.W, this.H);
     this.levels = root;
 
-    const bg = root.addComponent(Graphics);
-    bg.fillColor = new Color(232, 248, 253, 255);
-    bg.rect(-this.W / 2, -this.H / 2, this.W, this.H);
-    bg.fill();
+    const top = this.H / 2;
 
+    const topY = top - 78;
     const back = makeButton(root, {
-      w: 92,
-      h: 92,
+      w: 84,
+      h: 84,
       radius: 26,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 28),
-      shadowOffset: 6,
+      style: 'blue',
+      shadowOffset: 7,
       icon: 'back',
-      iconSize: 44,
+      iconSize: 42,
       onClick: () => {
         this.sfx.play('click');
         this.showHome();
       },
     });
-    back.node.setPosition(-this.W / 2 + 72, this.H / 2 - 82, 0);
+    back.node.setPosition(-this.W / 2 + 68, topY, 0);
 
-    makeLabel(root, '选择关卡', FONT.h1, C.ink, { width: 300, height: 70 }).node.setPosition(
-      -this.W / 2 + 210,
-      this.H / 2 - 92,
-      0,
-    );
+    makeLabel(root, I18n.t('levelMap'), 40, C.white, {
+      width: 280,
+      height: 60,
+      outlineColor: C.royalDark,
+      outlineWidth: 4,
+      shadowColor: new Color(0, 0, 0, 80),
+      shadowOffset: new Vec2(0, -3),
+    }).node.setPosition(-12, topY, 0);
 
-    makeIcon(root, 'star', 40).setPosition(this.W / 2 - 118, this.H / 2 - 92, 0);
-    this.levelsTotal = makeLabel(root, '0', 34, new Color(180, 122, 0, 255), {
-      width: 90,
-      height: 46,
+    const starPill = makePanel(root, 174, 64, {
+      radius: 32,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 5,
+      border: C.white,
+      borderWidth: 3.5,
+      shadow: new Color(10, 32, 68, 60),
+      shadowOffset: 9,
     });
-    this.levelsTotal.node.setPosition(this.W / 2 - 66, this.H / 2 - 92, 0);
+    starPill.setPosition(this.W / 2 - 112, topY, 0);
+    makeIcon(starPill, 'star', 42).setPosition(-54, 1, 0);
+    this.levelsTotal = makeLabel(starPill, '0', 30, C.goldText, { width: 100, height: 44 });
+    this.levelsTotal.node.setPosition(20, 1, 0);
 
-    // 章节导航：‹ 第 n/25 章 ›（500 关 = 25 章 × 20 关，规则书 §2）。
-    const navY = this.H / 2 - 178;
-    const prev = makeButton(root, {
-      w: 76,
-      h: 76,
-      radius: 22,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 28),
-      shadowOffset: 5,
-      text: '‹',
-      textSize: 44,
-      onClick: () => {
-        this.sfx.play('click');
-        this.chapterPage = Math.max(1, this.chapterPage - 1);
-        this.fillLevelGrid();
-      },
-    });
-    prev.node.setPosition(-150, navY, 0);
-    const next = makeButton(root, {
-      w: 76,
-      h: 76,
-      radius: 22,
-      fill: C.white,
-      shadow: new Color(30, 80, 110, 28),
-      shadowOffset: 5,
-      text: '›',
-      textSize: 44,
-      onClick: () => {
-        this.sfx.play('click');
-        this.chapterPage = Math.min(CHAPTER_COUNT, this.chapterPage + 1);
-        this.fillLevelGrid();
-      },
-    });
-    next.node.setPosition(150, navY, 0);
-    this.chapterLabel = makeLabel(root, '', 30, C.ink, { width: 360, height: 52 });
-    this.chapterLabel.node.setPosition(0, navY, 0);
+    this.chapterHeader = newNode('chapter-header', root);
+    this.chapterHeader.setPosition(0, top - 232, 0);
 
-    // 千层箭阵彩蛋关：永远可玩（主线之外，id 501）。
-    const bonus = makeButton(root, {
-      w: 76,
-      h: 76,
-      radius: 22,
-      fill: new Color(255, 240, 190, 255),
-      shadow: new Color(224, 182, 74, 255),
-      shadowOffset: 5,
-      text: '★',
-      textSize: 38,
-      onClick: () => this.startLevel(501, true),
+    const gridCardW = Math.min(this.W - 44, 660);
+    const gridCardH = 564;
+    const gridCardY = top - 622;
+    const gridCard = makePanel(root, gridCardW, gridCardH, {
+      radius: 34,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 8,
+      border: C.white,
+      borderWidth: 4,
+      shadow: new Color(10, 32, 68, 72),
+      shadowOffset: 14,
     });
-    bonus.node.setPosition(this.W / 2 - 76, navY, 0);
+    gridCard.setPosition(0, gridCardY, 0);
 
-    this.levelGrid = newNode('grid', root);
+    this.levelGrid = newNode('grid', gridCard);
     this.levelGrid.setPosition(0, 0, 0);
+
+    // Bottom Full-Width Bonus Challenge Card
+    const bonusY = gridCardY - gridCardH / 2 - 96;
+    const bonusCard = makePanel(root, gridCardW, 128, {
+      radius: 32,
+      fill: C.purple,
+      bevel: C.purpleDark,
+      bevelHeight: 8,
+      border: new Color(212, 191, 255, 255),
+      borderWidth: 4,
+      highlight: true,
+      shadow: new Color(18, 12, 54, 85),
+      shadowOffset: 14,
+    });
+    bonusCard.setPosition(0, Math.max(-this.H / 2 + 88, bonusY), 0);
+    makeIcon(bonusCard, 'star', 62).setPosition(-gridCardW / 2 + 56, 2, 0);
+    makeLabel(bonusCard, I18n.t('challengeTitle'), 28, C.white, {
+      width: 340,
+      height: 44,
+      align: 0,
+      outlineColor: C.purpleDark,
+      outlineWidth: 3,
+    }).node.setPosition(-gridCardW / 2 + 272, 18, 0);
+    makeLabel(bonusCard, I18n.t('challengeSub'), 19, new Color(235, 224, 255, 255), {
+      width: 340,
+      height: 30,
+      align: 0,
+    }).node.setPosition(-gridCardW / 2 + 272, -22, 0);
+
+    const bonusPlay = makeButton(bonusCard, {
+      w: 138,
+      h: 74,
+      radius: 24,
+      style: 'gold',
+      shadowOffset: 6,
+      text: I18n.t('challengeBtn'),
+      textSize: 28,
+      onClick: () => {
+        this.sfx.play('click');
+        this.startLevel(BONUS_CHALLENGE_ID, true);
+      },
+    });
+    bonusPlay.node.setPosition(gridCardW / 2 - 94, 2, 0);
+
     this.fillLevelGrid();
     root.active = false;
   }
 
   private fillLevelGrid(): void {
     const grid = this.levelGrid;
-    if (!grid) return;
+    const header = this.chapterHeader;
+    if (!grid || !header) return;
     grid.removeAllChildren();
+    header.removeAllChildren();
 
-    // 当前章的 20 关（5 列 × 4 行），角色角标：Boss ⚔ / 冲刺 ⚡ / 禅意画关 ✿。
     const from = (this.chapterPage - 1) * CHAPTER_SIZE + 1;
     const to = from + CHAPTER_SIZE - 1;
-    if (this.chapterLabel) {
-      const got = this.chapterStars(this.chapterPage);
-      this.chapterLabel.string = `第 ${this.chapterPage}/${CHAPTER_COUNT} 章 · ${got}/60 星`;
+    const wIdx = Math.max(0, Math.min(WORLD_THEMES.length - 1, Math.floor((this.chapterPage - 1) / 5)));
+    const wt = WORLD_THEMES[wIdx];
+    const got = this.chapterStars(this.chapterPage);
+
+    const cardW = Math.min(this.W - 44, 660);
+    const card = makePanel(header, cardW, 152, {
+      radius: 30,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 7,
+      border: C.white,
+      borderWidth: 4,
+      shadow: new Color(10, 32, 68, 65),
+      shadowOffset: 12,
+    });
+
+    const bannerW = cardW - 16;
+    const banner = makePanel(card, bannerW, 50, {
+      radius: 22,
+      fill: wt.banner,
+      bevel: wt.bannerDark,
+      bevelHeight: 4,
+      highlight: true,
+    });
+    banner.setPosition(0, 44, 0);
+    makeLabel(banner, I18n.t('worldBanner', { w: wIdx + 1, name: this.worldTitle(wIdx) }), 25, C.white, {
+      width: bannerW - 24,
+      height: 40,
+      outlineColor: wt.bannerDark,
+      outlineWidth: 3,
+    }).node.setPosition(0, 1, 0);
+
+    const navY = -12;
+    const prev = makeButton(card, {
+      w: 64,
+      h: 56,
+      radius: 20,
+      style: this.chapterPage > 1 ? 'blue' : 'cream',
+      shadowOffset: 5,
+      text: '‹',
+      textSize: 38,
+      onClick: () => {
+        if (this.chapterPage <= 1) return;
+        this.sfx.play('click');
+        this.chapterPage--;
+        this.fillLevelGrid();
+      },
+    });
+    prev.node.setPosition(-cardW / 2 + 58, navY, 0);
+    prev.setEnabled(this.chapterPage > 1);
+
+    const next = makeButton(card, {
+      w: 64,
+      h: 56,
+      radius: 20,
+      style: this.chapterPage < CHAPTER_COUNT ? 'blue' : 'cream',
+      shadowOffset: 5,
+      text: '›',
+      textSize: 38,
+      onClick: () => {
+        if (this.chapterPage >= CHAPTER_COUNT) return;
+        this.sfx.play('click');
+        this.chapterPage++;
+        this.fillLevelGrid();
+      },
+    });
+    next.node.setPosition(cardW / 2 - 58, navY, 0);
+    next.setEnabled(this.chapterPage < CHAPTER_COUNT);
+
+    makeLabel(card, I18n.t('chapterTitle', { c: this.chapterPage, total: CHAPTER_COUNT }), 28, C.ink, {
+      width: 280,
+      height: 40,
+    }).node.setPosition(0, navY + 6, 0);
+
+    const progW = 360;
+    const progY = -48;
+    const pTrack = makePanel(card, progW, 22, {
+      radius: 11,
+      fill: C.boardFrame,
+      border: C.boardFrameDark,
+      borderWidth: 2,
+    });
+    pTrack.setPosition(-28, progY, 0);
+    const pg = newNode('ch-fill', pTrack).addComponent(Graphics);
+    const ratio = Math.min(1, got / 60);
+    if (ratio > 0) {
+      const fw = Math.max(14, ratio * (progW - 6));
+      pg.fillColor = got >= 42 ? C.green : C.yellow;
+      pg.roundRect(-(progW - 6) / 2, -8, fw, 16, 7);
+      pg.fill();
     }
+    const tickX = -(progW - 6) / 2 + (42 / 60) * (progW - 6);
+    pg.strokeColor = new Color(255, 255, 255, 210);
+    pg.lineWidth = 2.5;
+    pg.moveTo(tickX, -8);
+    pg.lineTo(tickX, 8);
+    pg.stroke();
+
+    makeLabel(card, `${got}/60 ★`, 21, C.goldText, { width: 110, height: 28 }).node.setPosition(
+      progW / 2 + 26,
+      progY,
+      0,
+    );
 
     const cols = 5;
-    const gap = 18;
-    const cellW = Math.min(122, (this.W - 90 - (cols - 1) * gap) / cols);
+    const rows = 4;
+    const gap = 16;
+    const cellW = Math.min(112, (cardW - 56 - (cols - 1) * gap) / cols);
     const startX = -((cols - 1) * (cellW + gap)) / 2;
-    const gridTop = this.H / 2 - 262;
+    const startY = ((rows - 1) * (cellW + gap)) / 2 + 4;
 
     for (let i = from; i <= to; i++) {
       const col = (i - from) % cols;
       const row = Math.floor((i - from) / cols);
       const x = startX + col * (cellW + gap);
-      const y = gridTop - row * (cellW + gap);
+      const y = startY - row * (cellW + gap);
+
+      const step = stepOf(i);
+      const tag = step === 18 ? '⚔' : step === 13 ? '⚡' : step === 19 ? '✿' : '';
+      const tagColor = step === 18 ? C.red : step === 13 ? C.orange : C.green;
 
       if (i > this.save.unlocked && !isChallenge(i)) {
-        const b = makeButton(grid, {
-          w: cellW,
-          h: cellW,
+        const lockedTile = makePanel(grid, cellW, cellW, {
           radius: 24,
-          fill: new Color(255, 255, 255, 90),
-          icon: 'lock',
-          iconSize: 32,
-          onClick: () => this.showToast('先通过前一关才能解锁哦'),
+          fill: new Color(224, 236, 248, 255),
+          bevel: new Color(188, 206, 224, 255),
+          bevelHeight: 5,
+          border: new Color(206, 222, 238, 255),
+          borderWidth: 2,
         });
-        b.node.setPosition(x, y, 0);
+        lockedTile.setPosition(x, y, 0);
+        makeIcon(lockedTile, 'lock', 34).setPosition(0, 10, 0);
+        makeLabel(lockedTile, String(i), 20, C.inkFaint, { width: cellW, height: 26 }).node.setPosition(
+          0,
+          -26,
+          0,
+        );
+        lockedTile.on(Node.EventType.TOUCH_END, () => {
+          this.sfx.play('click');
+          this.showToast(I18n.t('toastLocked'));
+        });
+        if (tag) {
+          makeLabel(lockedTile, tag, 18, new Color(138, 158, 182, 210), {
+            width: 30,
+            height: 24,
+          }).node.setPosition(cellW / 2 - 18, cellW / 2 - 18, 0);
+        }
         continue;
       }
 
       const isCurrent = i === this.save.unlocked;
-      const tag = stepOf(i) === 18 ? '⚔' : stepOf(i) === 13 ? '⚡' : stepOf(i) === 19 ? '✿' : '';
       const b = makeButton(grid, {
         w: cellW,
         h: cellW,
         radius: 24,
-        fill: isCurrent ? new Color(255, 240, 190, 255) : C.white,
-        shadow: isCurrent ? new Color(224, 182, 74, 255) : new Color(30, 80, 110, 26),
-        shadowOffset: 5,
+        style: isCurrent ? 'gold' : 'blue',
+        shadowOffset: 6,
         text: String(i),
         textSize: 36,
-        onClick: () => this.startLevel(i, true),
+        onClick: () => {
+          this.sfx.play('click');
+          this.startLevel(i, true);
+        },
       });
       b.node.setPosition(x, y, 0);
-      if (b.label) b.label.node.setPosition(0, 8, 0);
+      if (b.label) b.label.node.setPosition(0, 12, 0);
+      if (isCurrent) pulseIdle(b.node, 0.04, 1.5);
+
       if (tag) {
-        const t = makeLabel(b.node, tag, 24, new Color(120, 130, 145, 255), {
-          width: 40,
-          height: 30,
+        const tBadge = makePanel(b.node, 34, 30, {
+          radius: 12,
+          fill: tagColor,
+          border: C.white,
+          borderWidth: 2,
         });
-        t.node.setPosition(cellW / 2 - 20, cellW / 2 - 20, 0);
+        tBadge.setPosition(cellW / 2 - 14, cellW / 2 - 12, 0);
+        makeLabel(tBadge, tag, 18, C.white, { width: 32, height: 24 }).node.setPosition(0, 1, 0);
       }
 
       const stars = this.save.stars[i] ?? 0;
       for (let s = 0; s < 3; s++) {
         const frame = Assets.frame(s < stars ? 'star' : 'star-empty');
         if (!frame) continue;
-        const sp = makeSprite(b.node, frame, 17, 17);
-        sp.node.setPosition(-22 + s * 22, -36, 0);
+        const sp = makeSprite(b.node, frame, 23, 23);
+        sp.node.setPosition((s - 1) * 26, -32, 0);
       }
     }
   }
@@ -682,10 +1170,22 @@ export class GameRoot extends Component {
 
   private buildToast(): void {
     const t = newNode('toast', this.node);
-    const bg = makePanel(t, 560, 64, { radius: 32, fill: new Color(22, 61, 92, 235) });
-    setSize(bg, 560, 64);
-    this.toastLabel = makeLabel(t, '', 24, C.white, { width: 540, height: 50 });
-    t.setPosition(0, -this.H * 0.18, 0);
+    const bg = makePanel(t, 580, 68, {
+      radius: 34,
+      fill: new Color(18, 48, 92, 242),
+      border: C.royalRim,
+      borderWidth: 3,
+      shadow: new Color(8, 22, 48, 90),
+      shadowOffset: 8,
+    });
+    setSize(bg, 580, 68);
+    this.toastLabel = makeLabel(t, '', 24, C.white, {
+      width: 548,
+      height: 50,
+      outlineColor: new Color(8, 22, 48, 255),
+      outlineWidth: 2,
+    });
+    t.setPosition(0, -this.H * 0.24, 0);
     setOpacity(t, 0);
     t.active = false;
     this.toast = t;
@@ -697,8 +1197,12 @@ export class GameRoot extends Component {
     if (this.toastLabel) this.toastLabel.string = message;
     const op = this.toast.getComponent(UIOpacity) || this.toast.addComponent(UIOpacity);
     op.opacity = 255;
+    this.toast.setScale(0.92, 0.92, 1);
+    tween(this.toast)
+      .to(0.16, { scale: new Vec3(1, 1, 1) }, { easing: 'backOut' })
+      .start();
     tween(op)
-      .delay(1.3)
+      .delay(1.35)
       .to(0.25, { opacity: 0 })
       .call(() => {
         if (this.toast) this.toast.active = false;
@@ -706,7 +1210,6 @@ export class GameRoot extends Component {
       .start();
   }
 
-  /** 结算离线恢复并刷新首页体力条。 */
   private updateEnergyPill(): void {
     const now = Date.now();
     const synced = syncEnergy(this.save, now);
@@ -715,45 +1218,78 @@ export class GameRoot extends Component {
       this.save.energyAt = synced.energyAt;
       persist(this.save);
     }
-    this.energyPill?.setText(`${this.save.energy}/${ENERGY_MAX}`);
-    if (this.energyNextLabel) {
-      const next = energyNextInMs(this.save, now);
-      this.energyNextLabel.string = next > 0 ? formatEnergyClock(next) : '';
+    if (this.energyLabel) {
+      this.energyLabel.string = `${this.save.energy}/${ENERGY_MAX}`;
+      this.energyLabel.color = this.save.energy <= 1 ? C.red : C.ink;
+    }
+    const next = energyNextInMs(this.save, now);
+    if (this.energyNextBadge && this.energyNextLabel) {
+      this.energyNextBadge.active = next > 0;
+      if (next > 0) this.energyNextLabel.string = formatEnergyClock(next);
     }
   }
 
-  /** 刷新提示按钮上的剩余次数角标。 */
   private updateHintBadge(): void {
-    if (this.hintBadge) this.hintBadge.string = String(this.save.hints);
+    const zero = this.save.hints <= 0;
+    if (this.hintBadge) {
+      this.hintBadge.string = zero ? '+' : String(this.save.hints);
+    }
+    const g = this.hintBadgeBg;
+    if (g) {
+      g.clear();
+      const w = 48;
+      const h = 36;
+      const r = h / 2 - 1;
+      g.fillColor = zero ? C.red : C.green;
+      g.roundRect(-w / 2, -h / 2, w, h, r);
+      g.fill();
+      g.lineWidth = 3;
+      g.strokeColor = C.white;
+      g.roundRect(-w / 2, -h / 2, w, h, r);
+      g.stroke();
+    }
   }
 
   private updateTimer(): void {
     if (!this.timerLabel) return;
-    // 禅意关：无时限，显示 ∞。
     if (this.level && this.level.timeLimit === 0) {
       this.timerLabel.string = '∞';
-      this.timerLabel.color = C.inkSoft;
+      this.timerLabel.color = C.goldLight;
       return;
     }
     const t = Math.max(0, Math.ceil(this.timeLeft));
     const mm = String(Math.floor(t / 60)).padStart(2, '0');
     const ss = String(t % 60).padStart(2, '0');
     this.timerLabel.string = `${mm}:${ss}`;
-    this.timerLabel.color = t <= 20 ? C.red : C.inkSoft;
+    const low = t <= 20;
+    this.timerLabel.color = low ? new Color(255, 148, 142, 255) : C.white;
     if (this.timerNode) {
-      const s = t <= 20 ? 1.06 : 1;
+      const s = low ? 1.05 : 1;
       this.timerNode.setScale(s, s, 1);
     }
   }
 
-  private updateHearts(): void {
+  private updateHearts(breakLatest = false): void {
     this.heartNodes.forEach((node, i) => {
       const alive = i < this.hearts;
       const sp = node.getComponent(Sprite);
-      if (sp) sp.color = alive ? C.white : new Color(190, 205, 215, 255);
-      const s = alive ? 1 : 0.86;
+      if (sp) sp.color = alive ? C.white : new Color(110, 145, 185, 130);
+      const s = alive ? 1 : 0.78;
       node.setScale(s, s, 1);
+      if (breakLatest && i === this.hearts) {
+        bump(node, 1.32, 0.24);
+      }
     });
+  }
+
+  private updateProgressHud(): void {
+    const total = this.board?.total ?? 1;
+    const remaining = this.board?.remaining ?? 0;
+    const done = Math.max(0, total - remaining);
+    this.drawProgress(done / Math.max(1, total));
+    if (this.progressLabel) {
+      this.progressLabel.string = `${done}/${total}`;
+    }
   }
 
   // ---------------------------------------------------------------- navigation
@@ -770,9 +1306,10 @@ export class GameRoot extends Component {
     this.board?.setHint(null);
     this.updateHintBadge();
     this.updateEnergyPill();
-    if (this.homeChip) {
-      this.homeChip.string = `第 ${Math.min(this.save.unlocked, LEVEL_COUNT)} 关`;
-    }
+    const nextLv = Math.min(this.save.unlocked, LEVEL_COUNT);
+    if (this.homeChip) this.homeChip.string = this.formatLevelTitle(nextLv);
+    this.paintHomeWorldPill(nextLv);
+    if (this.homeStarLabel) this.homeStarLabel.string = String(totalStars(this.save));
   }
 
   private showLevels(): void {
@@ -783,7 +1320,6 @@ export class GameRoot extends Component {
     if (this.home) this.home.active = false;
     if (this.game) this.game.active = false;
     if (this.levels) this.levels.active = true;
-    // 默认翻到玩家当前进度所在的章。
     this.chapterPage = chapterOf(Math.min(this.save.unlocked, LEVEL_COUNT));
     if (this.levelsTotal) this.levelsTotal.string = String(totalStars(this.save));
     this.fillLevelGrid();
@@ -791,13 +1327,10 @@ export class GameRoot extends Component {
 
   private startLevel(id: number, fromUI = false): void {
     this.unscheduleAllCallbacks();
-    // 体力门禁：体力不足 1 点时弹激励广告补体力，不进入关卡。
-    // 扣点不在这里：失败才扣（lose()），通关与中途重开都不扣。
     if (!canStartLevel(this.save, Date.now())) {
       this.showEnergyModal(true);
       return;
     }
-    // 章门禁（规则书 §7）：章首关需上一章 ≥42 星，或已用广告通行证。
     if (!this.checkChapterGate(id)) return;
 
     this.bossParts = getLevelParts(id);
@@ -807,18 +1340,15 @@ export class GameRoot extends Component {
     this.enterPart(0, fromUI);
   }
 
-  /**
-   * 进入一个「盘面」（普通关只有 1 个；Boss 三连打有 3 个，规则书 §5）。
-   * 爱心规则：首部件按模式给满（冲刺 5 颗，其余 3 颗）；Boss 后续部件
-   * 贯穿不清不补；失败重开当前部件时回满。
-   */
   private enterPart(index: number, fromUI = false, restart = false): void {
     const part = this.bossParts[index] ?? this.bossParts[0];
     this.bossIndex = index;
     this.level = part;
     this.mistakesBase = this.mistakes;
     if (index === 0 || restart) {
-      this.hearts = isSprint(part.id) ? 5 : 3;
+      this.heartMax = isSprint(part.id) ? 5 : 3;
+      this.hearts = this.heartMax;
+      this.rebuildHeartIcons(this.heartMax);
     }
     this.timeLeft = part.timeLimit;
     this.hintId = null;
@@ -832,32 +1362,24 @@ export class GameRoot extends Component {
     if (this.game) this.game.active = true;
 
     if (this.hudLevel) {
-      const tag =
-        this.bossParts.length > 1
-          ? ` · Boss ${index + 1}/3`
-          : isSprint(part.id)
-            ? ' · 冲刺'
-            : isZen(part.id)
-              ? ' · 禅意'
-              : '';
-      this.hudLevel.string = `${levelName(part.id)}${tag}`;
+      this.hudLevel.string = this.formatLevelTitle(part.id);
     }
+    this.updateModeBadge(part);
 
-    const topInset = this.H * 0.185;
-    const bottomInset = this.H * 0.145;
-    const availW = this.W - 44;
-    const availH = this.H - topInset - bottomInset;
-    const cell = Math.min(
-      Math.floor(availW / part.cols),
-      Math.floor(availH / part.rows),
-      88,
-    );
+    const topInset = 230;
+    const bottomInset = 178;
+    const availW = this.W - 72;
+    const availH = Math.max(240, this.H - topInset - bottomInset - 28);
+    const cell = Math.min(Math.floor(availW / part.cols), Math.floor(availH / part.rows), 86);
     const bw = cell * part.cols;
     const bh = cell * part.rows;
+    const boardCenterY = this.H / 2 - topInset - (this.H - topInset - bottomInset) / 2;
+
+    this.paintBoardMat(0, boardCenterY, bw, bh);
 
     if (this.boardNode && this.board) {
       this.board.inputEnabled = true;
-      this.boardNode.setPosition(0, this.H / 2 - topInset - availH / 2, 0);
+      this.boardNode.setPosition(0, boardCenterY, 0);
       this.zoom = 1;
       this.boardNode.setScale(1, 1, 1);
       if (this.zoomLabel) this.zoomLabel.string = '100%';
@@ -868,32 +1390,35 @@ export class GameRoot extends Component {
 
     this.updateHintBadge();
     this.updateHearts();
-    this.drawProgress(0);
+    this.updateProgressHud();
     this.updateTimer();
 
     if (fromUI) this.sfx.play('click');
     if (!this.save.seenHowto) {
       this.save.seenHowto = true;
       persist(this.save);
-      this.scheduleOnce(() => this.showHowto(), 0.5);
+      this.scheduleOnce(() => this.showHowto(), 0.45);
     }
   }
 
-  /** 章首关的星级门禁：不足 42 星 → 回刷或看广告通行（每章限 1 次）。 */
   private checkChapterGate(id: number): boolean {
-    if (id <= 1 || stepOf(id) !== 0) return true;
+    if (id <= 1 || id > LEVEL_COUNT || stepOf(id) !== 0) return true;
     const entering = chapterOf(id);
     const prev = entering - 1;
     const need = 42;
     const got = this.chapterStars(prev);
     if (got >= need || this.save.chapterPasses[String(prev)]) return true;
     this.showModal({
-      title: `第 ${prev} 章星数不足`,
-      lines: [`进入下一章需要 ${need} 颗星，当前 ${got} 颗`, '回上一章补星，或看一段广告直接通行'],
+      title: I18n.t('chapterGateTitle', { n: entering }),
+      tone: 'blue',
+      lines: [
+        I18n.t('chapterGateLine1', { need, got }),
+        I18n.t('chapterGateLine2'),
+      ],
       buttons: [
         {
-          text: '回上一章',
-          primary: true,
+          text: I18n.t('prevChapter'),
+          style: 'blue',
           onClick: () => {
             this.closeModal();
             this.chapterPage = prev;
@@ -901,17 +1426,18 @@ export class GameRoot extends Component {
           },
         },
         {
-          text: '看广告 通行',
+          text: I18n.t('freePassAd'),
+          style: 'gold',
           onClick: () =>
             this.runRewardedAd(
               () => {
                 this.save.chapterPasses[String(prev)] = true;
                 persist(this.save);
-                this.showToast('通行成功，继续冒险！');
+                this.showToast(I18n.t('chapterUnlocked'));
                 this.closeModal();
                 this.startLevel(id, true);
               },
-              '要看完整段广告才能通行哦',
+              I18n.t('toastAdPass'),
             ),
         },
       ],
@@ -927,23 +1453,13 @@ export class GameRoot extends Component {
     return n;
   }
 
-  /** 点了还冻结着的箭：不扣分，节流提示规则。 */
-  private onFrozenTap(_arrow: Arrow): void {
-    if (this.clock - this.frozenToastAt < 3) return;
-    this.frozenToastAt = this.clock;
-    this.showToast('冰封的箭还不能飞，先清掉它旁边的两支箭');
-    this.sfx.play('thud', 0.6);
-  }
-
   private onCleared(arrow: Arrow): void {
     if (!this.running) return;
     this.sfx.play('pop', 0.9);
     if (this.hintId === arrow.id) this.hintId = null;
 
-    const total = this.board?.total ?? 1;
-    const remaining = this.board?.remaining ?? 0;
-    this.drawProgress((total - remaining) / total);
-    if (remaining === 0) this.win();
+    this.updateProgressHud();
+    if ((this.board?.remaining ?? 0) === 0) this.win();
   }
 
   private onBlocked(arrow: Arrow, blocker: Arrow | null): void {
@@ -951,34 +1467,29 @@ export class GameRoot extends Component {
     this.mistakes++;
     this.sfx.play('thud');
     if (this.save.haptics) Platform.vibrate();
-    // 禅意关（规则书 §5）：撞墙只计星，不扣爱心、无失败。
     if (this.level && isZen(this.level.id)) {
-      const zenName = blocker ? ARROW_NAMES[blocker.color % ARROW_NAMES.length] : '';
-      this.showToast(blocker ? `被${zenName}色箭头挡住了（不影响爱心）` : '这支箭暂时飞不出去');
+      const color = blocker ? I18n.arrowColorName(blocker.color) : '';
+      this.showToast(
+        blocker ? I18n.t('toastZenBlocked', { color }) : I18n.t('toastZenGeneric'),
+      );
       void arrow;
       return;
     }
     this.hearts--;
-    this.updateHearts();
+    this.updateHearts(true);
     if (this.hearts <= 0) {
       this.lose('hearts');
       return;
     }
-    const name = blocker
-      ? blocker.isBoss
-        ? '大 Boss'
-        : ARROW_NAMES[blocker.color % ARROW_NAMES.length]
-      : '';
-    this.showToast(
-      arrow.isBoss
-        ? 'Boss 双倍宽：两条通道都要清空才能飞'
-        : blocker
-          ? blocker.isBoss
-            ? '被大 Boss 挡住了！'
-            : `被${name}色箭头挡住了`
-          : '这支箭暂时飞不出去',
-    );
-    void arrow;
+    if (arrow.isBoss) {
+      this.showToast(I18n.t('toastBossWide'));
+    } else if (blocker?.isBoss) {
+      this.showToast(I18n.t('toastBlockedBoss'));
+    } else if (blocker) {
+      this.showToast(I18n.t('toastBlockedColor', { color: I18n.arrowColorName(blocker.color) }));
+    } else {
+      this.showToast(I18n.t('toastBlockedGeneric'));
+    }
   }
 
   private useHint(): void {
@@ -1010,31 +1521,31 @@ export class GameRoot extends Component {
     if (this.boardNode) this.boardNode.setScale(this.zoom, this.zoom, 1);
   }
 
-  private toggleSound(): void {
-    this.save.sound = !this.save.sound;
-    this.sfx.enabled = this.save.sound;
-    persist(this.save);
+  private resetZoom(): void {
     this.sfx.play('click');
-    this.showToast(this.save.sound ? '音效已开启' : '音效已关闭');
+    this.zoom = 1;
+    if (this.zoomLabel) this.zoomLabel.string = '100%';
+    if (this.boardNode) this.boardNode.setScale(1, 1, 1);
   }
 
   private confirmRestart(): void {
     if (!this.running) return;
     this.paused = true;
     this.showModal({
-      title: '重新开始？',
-      lines: ['本关进度会清空，爱心恢复满'],
+      title: I18n.t('restartTitle'),
+      tone: 'blue',
+      lines: [I18n.t('restartBody')],
       buttons: [
         {
-          text: '重新开始',
-          primary: true,
+          text: I18n.t('restartConfirm'),
+          style: 'blue',
           onClick: () => {
             this.closeModal();
             this.paused = false;
             this.startLevel(this.level ? this.level.id : 1);
           },
         },
-        { text: '继续游戏', onClick: () => this.closeModal() },
+        { text: I18n.t('keepPlaying'), style: 'cream', onClick: () => this.closeModal() },
       ],
     });
   }
@@ -1044,20 +1555,24 @@ export class GameRoot extends Component {
   private win(): void {
     if (!this.level) return;
     this.running = false;
-    if (this.board) this.board.inputEnabled = false;
+    if (this.board) {
+      this.board.inputEnabled = false;
+      this.board.celebrate();
+    }
     const id = this.level.id;
 
-    // Boss 三连打：先过部件，最后一盘才结算（规则书 §5）。
     if (this.bossParts.length > 1 && this.bossIndex < this.bossParts.length - 1) {
       const cleared = this.bossIndex + 1;
+      this.sfx.play('win');
       this.scheduleOnce(() => {
         this.showModal({
-          title: `Boss ${cleared}/3 通过！`,
-          lines: ['爱心会带进下一小关，稳住'],
+          title: I18n.t('bossPartTitle', { n: cleared }),
+          tone: 'gold',
+          lines: [I18n.t('bossPartBody')],
           buttons: [
             {
-              text: '下一小关',
-              primary: true,
+              text: I18n.t('nextStage'),
+              style: 'green',
               onClick: () => {
                 this.closeModal();
                 this.enterPart(this.bossIndex + 1, false);
@@ -1065,58 +1580,67 @@ export class GameRoot extends Component {
             },
           ],
         });
-      }, 0.6);
+      }, 0.65);
       return;
     }
 
-    // 星级：按全部部件的箭数合计折算撞墙阈值（Boss），单部件关即本关箭数。
     const total = this.bossParts.reduce((n, p) => n + p.arrows.length, 0);
     const star3 = Math.max(1, Math.round(total * 0.05));
     const star2 = Math.max(2, Math.round(total * 0.18));
     const stars = this.mistakes <= star3 ? 3 : this.mistakes <= star2 ? 2 : 1;
 
     this.save.stars[id] = Math.max(this.save.stars[id] ?? 0, stars);
-    this.save.unlocked = Math.max(this.save.unlocked, Math.min(LEVEL_COUNT, id + 1));
+    if (!isChallenge(id)) {
+      this.save.unlocked = Math.max(this.save.unlocked, Math.min(LEVEL_COUNT, id + 1));
+    }
     persist(this.save);
     this.sfx.play('win');
 
     const isLast = id >= LEVEL_COUNT;
-    this.scheduleOnce(() => this.showWinModal(id, stars, isLast), 1.0);
+    this.scheduleOnce(() => this.showWinModal(id, stars, isLast), 0.95);
   }
 
-  /** 通关弹窗：未满星时提供「看广告 星数×2」激励位（规则书 §9 位 #4）。 */
   private showWinModal(id: number, stars: number, isLast: boolean): void {
     const buttons: ModalButton[] = [];
     if (stars < 3) {
       buttons.push({
-        text: '看广告 星数×2',
+        text: I18n.t('doubleStarsAd'),
+        style: 'gold',
+        icon: 'star',
         onClick: () => this.doubleStars(id, stars, isLast),
       });
     }
     buttons.push(
       isLast
-        ? { text: '返回关卡', primary: true, onClick: () => this.showLevels() }
+        ? { text: I18n.t('backToLevels'), style: 'green', onClick: () => this.showLevels() }
         : {
-            text: '下一关',
-            primary: true,
-            onClick: () => this.startLevel(Math.min(LEVEL_COUNT, id + 1)),
+            text: I18n.t('nextLevel'),
+            style: 'green',
+            icon: 'play',
+            onClick: () => this.startLevel(Math.min(LEVEL_COUNT, id + 1), true),
           },
     );
+
+    const statCopy =
+      stars === 3
+        ? I18n.t('winPerfect')
+        : this.mistakes > 0
+          ? I18n.t('winBumps', { n: this.mistakes })
+          : I18n.t('winGreat');
+
     this.showModal({
-      title: isLast ? '全部通关！' : '通关啦',
-      lines: [
-        stars === 3
-          ? '完美！一次都没撞墙'
-          : this.mistakes > 0
-            ? `撞墙 ${this.mistakes} 次，再试一次冲击三星`
-            : '漂亮，继续保持',
-      ],
+      title: isLast ? I18n.t('allClearedTitle') : I18n.t('victoryTitle'),
+      tone: 'gold',
+      lines: [statCopy],
       stars,
       buttons,
+      rowButtons: [
+        { text: I18n.t('replay'), style: 'cream', onClick: () => this.startLevel(id, true) },
+        { text: I18n.t('home'), style: 'cream', onClick: () => this.showHome() },
+      ],
     });
   }
 
-  /** 双倍星：看完激励广告星星 ×2（上限 3 星）。 */
   private doubleStars(id: number, stars: number, isLast: boolean): void {
     this.runRewardedAd(
       () => {
@@ -1124,11 +1648,11 @@ export class GameRoot extends Component {
         this.save.stars[id] = Math.max(this.save.stars[id] ?? 0, doubled);
         persist(this.save);
         this.sfx.play('coin');
-        this.showToast(`星数翻倍，拿到 ${doubled} 星！`);
+        this.showToast(I18n.t('toastStarsDoubled', { n: doubled }));
         this.closeModal();
         this.scheduleOnce(() => this.showWinModal(id, doubled, isLast), 0.35);
       },
-      '要看完整段广告才能翻倍哦',
+      I18n.t('toastAdDouble'),
     );
   }
 
@@ -1138,7 +1662,6 @@ export class GameRoot extends Component {
     if (this.board) this.board.inputEnabled = false;
     this.paused = false;
     this.sfx.play('lose');
-    // 失败才真正扣体力（通关不扣）。复活成功会把这点退回（首次复活）。
     const spent = spendEnergy(this.save, Date.now());
     if (spent) {
       this.save.energy = spent.energy;
@@ -1146,42 +1669,48 @@ export class GameRoot extends Component {
       persist(this.save);
     }
     const id = this.level ? this.level.id : 1;
-    // 复活递增（规则书 §10）：前 100 关限 1 次；之后第 2 次需连看 2 段广告。
     const maxRevives = id <= 100 ? 1 : 2;
     const canRevive = this.reviveCount < maxRevives;
     const buttons: ModalButton[] = [];
     if (canRevive) {
       buttons.push({
-        text: this.reviveCount === 0 ? '看广告 复活' : '看 2 段广告 复活',
-        primary: true,
+        text: this.reviveCount === 0 ? I18n.t('reviveAd') : I18n.t('reviveAd2'),
+        style: 'green',
+        icon: 'heart',
         onClick: () => this.revive(reason),
       });
     }
-    buttons.push(
-      {
-        text: '再试一次',
-        onClick: () => this.restartCurrentPart(),
-      },
-      { text: '返回关卡', onClick: () => this.showLevels() },
-    );
+    buttons.push({
+      text: I18n.t('tryAgain'),
+      style: canRevive ? 'blue' : 'green',
+      icon: 'restart',
+      onClick: () => this.restartCurrentPart(),
+    });
     this.scheduleOnce(() => {
       this.showModal({
-        title: reason === 'time' ? '时间到' : '爱心用尽',
-        lines: [
-          canRevive
-            ? reason === 'time'
-              ? '别急，看段广告补足时间继续'
-              : '每一次撞墙都会失去一颗爱心'
-            : reason === 'time'
-              ? '别急，先看清楚每一支箭的出口'
-              : '每一次撞墙都会失去一颗爱心',
-        ],
+        title: reason === 'time' ? I18n.t('timesUpTitle') : I18n.t('outOfHeartsTitle'),
+        tone: 'red',
+        extraHeight: 96,
+        content: (panel, topY) => {
+          const badge = makePanel(panel, 104, 104, {
+            radius: 52,
+            fill: new Color(255, 232, 232, 255),
+            border: new Color(242, 130, 126, 255),
+            borderWidth: 3,
+          });
+          badge.setPosition(0, topY - 40, 0);
+          makeIcon(badge, reason === 'time' ? 'clock' : 'heart', 62);
+        },
+        lines: [reason === 'time' ? I18n.t('loseTimeBody') : I18n.t('loseHeartsBody')],
         buttons,
+        rowButtons: [
+          { text: I18n.t('backToLevels'), style: 'cream', onClick: () => this.showLevels() },
+          { text: I18n.t('home'), style: 'cream', onClick: () => this.showHome() },
+        ],
       });
     }, 0.4);
   }
 
-  /** 重开当前盘面：Boss 连打从当前小关重来并回满爱心（规则书 §5）。 */
   private restartCurrentPart(): void {
     const id = this.level ? this.level.id : 1;
     this.closeModal();
@@ -1195,11 +1724,6 @@ export class GameRoot extends Component {
     }
   }
 
-  /**
-   * 看完激励广告复活（规则书 §10 递增方案）：
-   *  - 第 1 次：1 段广告，爱心回 3 + 补足时间 + 退还失败扣的体力；
-   *  - 第 2 次：连看 2 段广告，爱心回 2 + 补时 45s（不退体力）。
-   */
   private revive(reason: 'hearts' | 'time'): void {
     if (!this.level) return;
     const attempt = this.reviveCount;
@@ -1207,7 +1731,7 @@ export class GameRoot extends Component {
       this.closeModal();
       this.reviveCount++;
       if (attempt === 0) {
-        this.hearts = 3;
+        this.hearts = Math.min(this.heartMax, 3);
         if (reason === 'time') {
           this.timeLeft = Math.min(this.level ? this.level.timeLimit : 120, this.timeLeft + 60);
         } else {
@@ -1228,16 +1752,15 @@ export class GameRoot extends Component {
       this.updateHearts();
       this.updateTimer();
       this.sfx.play('coin');
-      this.showToast(attempt === 0 ? '满血复活，继续！' : '复活成功，稳住这波！');
+      this.showToast(attempt === 0 ? I18n.t('toastRevive1') : I18n.t('toastRevive2'));
     };
     if (attempt === 0) {
-      this.runRewardedAd(grant, '要看完整段广告才能复活哦');
+      this.runRewardedAd(grant, I18n.t('toastAdRevive1'));
     } else {
-      this.runRewardedAds(2, grant, '要看完整两段广告才能复活哦');
+      this.runRewardedAds(2, grant, I18n.t('toastAdRevive2'));
     }
   }
 
-  /** 连看 n 段激励广告：全部看完才发奖，中途放弃不发。 */
   private runRewardedAds(count: number, onReward: () => void, failMsg: string): void {
     const chain = (left: number): void => {
       this.runRewardedAd(() => {
@@ -1252,18 +1775,26 @@ export class GameRoot extends Component {
     if (!this.running || this.paused) return;
     this.paused = true;
     this.showModal({
-      title: '暂停',
+      title: I18n.t('pauseTitle'),
+      tone: 'blue',
+      extraHeight: 158,
+      content: (p, topY) => {
+        this.buildSettingRows(p, topY, false);
+      },
       buttons: [
-        { text: '继续游戏', primary: true, onClick: () => this.closeModal() },
+        { text: I18n.t('resume'), style: 'green', icon: 'play', onClick: () => this.closeModal() },
+      ],
+      rowButtons: [
         {
-          text: '重来',
+          text: I18n.t('restartConfirm'),
+          style: 'blue',
           onClick: () => {
             this.closeModal();
             this.paused = false;
             this.startLevel(this.level ? this.level.id : 1);
           },
         },
-        { text: '返回首页', onClick: () => this.showHome() },
+        { text: I18n.t('home'), style: 'cream', onClick: () => this.showHome() },
       ],
     });
   }
@@ -1275,6 +1806,21 @@ export class GameRoot extends Component {
     this.overlay.removeAllChildren();
     this.overlay.active = false;
     if (this.running) this.paused = false;
+  }
+
+  private ribbonPalette(tone: RibbonTone): { fill: Color; dark: Color; rim: Color } {
+    switch (tone) {
+      case 'gold':
+        return { fill: C.yellow, dark: C.yellowDark, rim: C.goldLight };
+      case 'red':
+        return { fill: C.red, dark: C.redDark, rim: new Color(255, 175, 170, 255) };
+      case 'green':
+        return { fill: C.green, dark: C.greenDark, rim: C.greenLight };
+      case 'purple':
+        return { fill: C.purple, dark: C.purpleDark, rim: new Color(214, 194, 255, 255) };
+      default:
+        return { fill: C.blue, dark: C.blueDark, rim: C.blueLight };
+    }
   }
 
   private showModal(opts: ModalOptions): Node | null {
@@ -1295,22 +1841,28 @@ export class GameRoot extends Component {
       e.propagationStopped = true;
     });
 
-    const panelW = Math.min(this.W - 70, 620);
+    const panelW = Math.min(this.W - 64, 624);
     const lines = opts.lines ?? [];
     const buttons = opts.buttons ?? [];
-    let contentH = 40 + 86;
-    contentH += lines.length * 44;
-    if (opts.stars !== undefined) contentH += 128;
+    const rowButtons = opts.rowButtons ?? [];
+
+    let contentH = 68;
+    if (opts.stars !== undefined) contentH += 146;
     contentH += opts.extraHeight ?? 0;
-    contentH += 24;
-    const buttonsH = buttons.length * 100;
-    const panelH = contentH + buttonsH + 30;
+    contentH += lines.length * 46;
+    contentH += 22;
+    const buttonsH = buttons.length * 102 + (rowButtons.length ? 92 : 0);
+    const panelH = contentH + buttonsH + 34;
 
     const panel = makePanel(this.overlay, panelW, panelH, {
-      radius: 40,
-      fill: C.white,
-      shadow: new Color(6, 30, 50, 70),
-      shadowOffset: 14,
+      radius: 38,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 10,
+      border: C.white,
+      borderWidth: 5,
+      shadow: new Color(6, 22, 48, 125),
+      shadowOffset: 18,
     });
     panel.on(Node.EventType.TOUCH_START, (e: { propagationStopped: boolean }) => {
       e.propagationStopped = true;
@@ -1319,93 +1871,227 @@ export class GameRoot extends Component {
       e.propagationStopped = true;
     });
 
-    let y = panelH / 2 - 62;
-    const title = makeLabel(panel, opts.title, FONT.h1, C.ink, {
-      width: panelW - 60,
-      height: 72,
-    });
-    title.node.setPosition(0, y, 0);
-    y -= 86;
+    const rp = this.ribbonPalette(opts.tone ?? 'blue');
+    const ribbon = makeRibbon(panel, opts.title, Math.min(panelW - 76, 468), 76, rp.fill, rp.dark, rp.rim, 34);
+    ribbon.setPosition(0, panelH / 2 + 2, 0);
 
-    for (const line of lines) {
-      makeLabel(panel, line, 26, C.inkSoft, {
-        width: panelW - 60,
-        height: 40,
-      }).node.setPosition(0, y, 0);
-      y -= 44;
-    }
+    let y = panelH / 2 - 68;
 
     if (opts.stars !== undefined) {
+      const glow = newNode('star-glow', panel);
+      glow.setPosition(0, y - 58, 0);
+      const gg = glow.addComponent(Graphics);
+      gg.fillColor = new Color(255, 224, 110, 75);
+      gg.circle(0, 0, 108);
+      gg.fill();
+      gg.fillColor = new Color(255, 240, 170, 95);
+      gg.circle(0, 0, 72);
+      gg.fill();
+
       for (let i = 0; i < 3; i++) {
-        const frame = Assets.frame(i < opts.stars ? 'star' : 'star-empty');
+        const earned = i < opts.stars;
+        const frame = Assets.frame(earned ? 'star' : 'star-empty');
         if (!frame) continue;
-        const sp = makeSprite(panel, frame, 104, 104);
-        sp.node.setPosition((i - 1) * 120, y - 48, 0);
-        sp.node.setScale(0.3, 0.3, 1);
+        const sz = i === 1 ? 120 : 102;
+        const sp = makeSprite(panel, frame, sz, sz);
+        sp.node.setPosition((i - 1) * 124, y - (i === 1 ? 50 : 62), 0);
+        sp.node.setScale(0.25, 0.25, 1);
         tween(sp.node)
-          .delay(0.12 + i * 0.15)
-          .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'backOut' })
+          .delay(0.12 + i * 0.16)
+          .to(0.32, { scale: new Vec3(1, 1, 1) }, { easing: 'backOut' })
           .start();
       }
-      y -= 128;
+      y -= 146;
     }
 
-    if (opts.content) opts.content(panel, y);
+    if (opts.content) {
+      opts.content(panel, y);
+      y -= opts.extraHeight ?? 0;
+    }
 
-    let by = -panelH / 2 + 26 + (buttons.length - 1) * 100 + 44;
+    for (const line of lines) {
+      makeLabel(panel, line, 23, C.inkSoft, {
+        width: panelW - 68,
+        height: 42,
+      }).node.setPosition(0, y - 10, 0);
+      y -= 46;
+    }
+
+    let by = -panelH / 2 + 34 + (rowButtons.length ? 92 : 0) + (buttons.length - 1) * 102 + 44;
     for (const btn of buttons) {
+      const style: ButtonStyleName = btn.style ?? (btn.primary ? 'green' : 'cream');
       const b = makeButton(panel, {
-        w: panelW - 80,
+        w: panelW - 84,
         h: 84,
         radius: 26,
-        fill: btn.primary ? C.blue : new Color(238, 244, 249, 255),
-        fillTop: btn.primary ? new Color(255, 255, 255, 40) : undefined,
-        shadow: btn.primary ? C.blueDark : new Color(216, 228, 238, 255),
-        shadowOffset: 7,
+        style,
+        shadowOffset: 8,
+        icon: btn.icon,
+        iconSize: 40,
         text: btn.text,
-        textSize: btn.primary ? 38 : 32,
-        textColor: btn.primary ? C.white : C.inkSoft,
+        textSize: style === 'cream' ? 30 : 34,
         onClick: () => {
           this.sfx.play('click');
           btn.onClick();
         },
       });
       b.node.setPosition(0, by, 0);
-      by -= 100;
+      by -= 102;
+    }
+
+    if (rowButtons.length) {
+      const rw = (panelW - 84 - (rowButtons.length - 1) * 18) / rowButtons.length;
+      const ry = -panelH / 2 + 72;
+      rowButtons.forEach((btn, i) => {
+        const x = (i - (rowButtons.length - 1) / 2) * (rw + 18);
+        const style: ButtonStyleName = btn.style ?? 'cream';
+        const b = makeButton(panel, {
+          w: rw,
+          h: 74,
+          radius: 24,
+          style,
+          shadowOffset: 6,
+          text: btn.text,
+          textSize: 27,
+          onClick: () => {
+            this.sfx.play('click');
+            btn.onClick();
+          },
+        });
+        b.node.setPosition(x, ry, 0);
+      });
     }
 
     popIn(panel, 0.02);
     return panel;
   }
 
+  private buildSettingRows(p: Node, topY: number, showFull: boolean): void {
+    const panelW = Math.min(this.W - 64, 624);
+    const rowW = panelW - 76;
+
+    const rows = [
+      { text: I18n.t('soundFx'), on: this.save.sound, icon: this.save.sound ? 'sound' : 'sound-off' },
+      { text: I18n.t('haptics'), on: this.save.haptics, icon: 'bolt' },
+    ];
+
+    rows.forEach((row, i) => {
+      const y = topY - 38 - i * 80;
+      const tray = makePanel(p, rowW, 66, {
+        radius: 22,
+        fill: C.creamWarm,
+        border: C.creamDeep,
+        borderWidth: 2,
+      });
+      tray.setPosition(0, y, 0);
+      makeIcon(tray, row.icon, 36).setPosition(-rowW / 2 + 40, 0, 0);
+      const rowLbl = makeLabel(tray, row.text, 26, C.ink, { width: 250, height: 42, align: 0 });
+      rowLbl.node.getComponent(UITransform)?.setAnchorPoint(0, 0.5);
+      rowLbl.node.setPosition(-rowW / 2 + 76, 0, 0);
+      const sw = makeButton(tray, {
+        w: 118,
+        h: 48,
+        radius: 24,
+        style: row.on ? 'green' : 'cream',
+        shadowOffset: 4,
+        text: row.on ? I18n.t('on') : I18n.t('off'),
+        textSize: 22,
+        onClick: () => {
+          let nextVal: boolean;
+          if (i === 0) {
+            this.save.sound = !this.save.sound;
+            this.sfx.enabled = this.save.sound;
+            nextVal = this.save.sound;
+          } else {
+            this.save.haptics = !this.save.haptics;
+            nextVal = this.save.haptics;
+          }
+          persist(this.save);
+          this.sfx.play('click');
+          sw.setText(nextVal ? I18n.t('on') : I18n.t('off'));
+          sw.repaintStyle(nextVal ? 'green' : 'cream');
+        },
+      });
+      sw.node.setPosition(rowW / 2 - 76, 2, 0);
+    });
+
+    if (showFull) {
+      // Language selector row (English <-> 中文)
+      const langY = topY - 38 - 160;
+      const langTray = makePanel(p, rowW, 66, {
+        radius: 22,
+        fill: C.creamWarm,
+        border: C.creamDeep,
+        borderWidth: 2,
+      });
+      langTray.setPosition(0, langY, 0);
+      makeIcon(langTray, 'levels', 34).setPosition(-rowW / 2 + 40, 0, 0);
+      const langLbl = makeLabel(langTray, I18n.t('language'), 26, C.ink, { width: 230, height: 42, align: 0 });
+      langLbl.node.getComponent(UITransform)?.setAnchorPoint(0, 0.5);
+      langLbl.node.setPosition(-rowW / 2 + 76, 0, 0);
+      const langBtn = makeButton(langTray, {
+        w: 148,
+        h: 48,
+        radius: 24,
+        style: 'blue',
+        shadowOffset: 4,
+        text: I18n.t('langName'),
+        textSize: 22,
+        onClick: () => {
+          this.sfx.play('click');
+          this.switchLanguage(this.save.lang === 'en' ? 'zh' : 'en');
+        },
+      });
+      langBtn.node.setPosition(rowW / 2 - 90, 2, 0);
+
+      const stat = makePanel(p, rowW, 54, {
+        radius: 20,
+        fill: C.boardFrame,
+        border: C.white,
+        borderWidth: 2,
+      });
+      stat.setPosition(0, topY - 270, 0);
+      makeLabel(
+        stat,
+        I18n.t('progressStat', {
+          u: this.save.unlocked,
+          total: LEVEL_COUNT,
+          stars: totalStars(this.save),
+        }),
+        22,
+        C.ink,
+        { width: rowW - 24, height: 38 },
+      );
+    }
+  }
+
   private showHowto(): void {
     const wasRunning = this.running;
     if (wasRunning) this.paused = true;
     this.showModal({
-      title: '怎么玩',
-      lines: [
-        '1. 点一支箭，它会朝箭头方向飞出去',
-        '2. 前方被别的箭挡住就会撞墙，扣一颗爱心',
-        '3. 把棋盘清空即可过关，撞墙越少星星越多',
-        '4. 冰封的箭不能飞：先清掉它旁边两支箭',
-      ],
-      extraHeight: 30,
+      title: I18n.t('howToTitle'),
+      tone: 'blue',
+      lines: [I18n.t('howTo1'), I18n.t('howTo2'), I18n.t('howTo3')],
+      extraHeight: 82,
       content: (panel, topY) => {
-        const tip = makePanel(panel, 520, 68, {
-          radius: 22,
-          fill: new Color(255, 248, 227, 255),
+        const tip = makePanel(panel, 536, 72, {
+          radius: 24,
+          fill: C.creamWarm,
+          border: C.yellow,
+          borderWidth: 2.5,
         });
-        tip.setPosition(0, topY - 20, 0);
-        makeIcon(tip, 'bulb', 36).setPosition(-210, 0, 0);
-        makeLabel(tip, '卡住了？用提示高亮一支能飞的箭', 22, new Color(150, 100, 20, 255), {
-          width: 420,
-          height: 50,
-        }).node.setPosition(20, 0, 0);
+        tip.setPosition(0, topY - 36, 0);
+        makeIcon(tip, 'bulb', 42).setPosition(-218, 0, 0);
+        makeLabel(tip, I18n.t('howToTip'), 21, C.goldText, {
+          width: 438,
+          height: 44,
+          align: 0,
+        }).node.setPosition(28, 0, 0);
       },
       buttons: [
         {
-          text: '知道了',
-          primary: true,
+          text: I18n.t('letsPlay'),
+          style: 'green',
           onClick: () => {
             this.closeModal();
             if (wasRunning) this.paused = false;
@@ -1418,100 +2104,87 @@ export class GameRoot extends Component {
   private showSettings(): void {
     const wasRunning = this.running;
     if (wasRunning) this.paused = true;
-
-    const buildToggle = (panel: Node, y: number, isOn: boolean, onToggle: () => boolean) => {
-      const b = makeButton(panel, {
-        w: 120,
-        h: 56,
-        radius: 28,
-        fill: isOn ? C.green : new Color(219, 230, 238, 255),
-        text: isOn ? '开' : '关',
-        textSize: 26,
-        textColor: C.white,
-        onClick: () => {
-          const next = onToggle();
-          b.setText(next ? '开' : '关');
-          const g = b.node.getComponent(Graphics);
-          if (g) {
-            g.clear();
-            g.fillColor = next ? C.green : new Color(219, 230, 238, 255);
-            g.roundRect(-60, -28, 120, 56, 28);
-            g.fill();
-          }
-        },
-      });
-      b.node.setPosition(0, y, 0);
-      return b;
-    };
-
-    const panel = this.showModal({
-      title: '设置',
-      extraHeight: 190,
+    this.showModal({
+      title: I18n.t('settingsTitle'),
+      tone: 'blue',
+      extraHeight: 308,
       content: (p, topY) => {
-        const panelW = Math.min(this.W - 70, 620);
-        const rows = [
-          { text: '音效', on: this.save.sound },
-          { text: '震动反馈', on: this.save.haptics },
-        ];
-        rows.forEach((row, i) => {
-          const y = topY - 30 - i * 88;
-          makeLabel(p, row.text, 30, C.ink, { width: 300, height: 50, align: 0 }).node.setPosition(
-            -panelW / 2 + 160,
-            y,
-            0,
-          );
-          buildToggle(p, y, row.on, () => {
-            if (i === 0) {
-              this.save.sound = !this.save.sound;
-              this.sfx.enabled = this.save.sound;
-              persist(this.save);
-              this.sfx.play('click');
-              return this.save.sound;
-            }
-            this.save.haptics = !this.save.haptics;
-            persist(this.save);
-            return this.save.haptics;
-          }).node.setPosition(panelW / 2 - 170, y, 0);
-        });
-
-        makeLabel(p, `已解锁 ${this.save.unlocked} / ${LEVEL_COUNT} 关 · ${totalStars(this.save)} 星`, 22, C.inkSoft, {
-          width: 520,
-          height: 40,
-        }).node.setPosition(0, topY - 192, 0);
+        this.buildSettingRows(p, topY, true);
       },
       buttons: [
-        { text: '完成', primary: true, onClick: () => {
-          this.closeModal();
-          if (wasRunning) this.paused = false;
-        } },
+        {
+          text: I18n.t('done'),
+          style: 'green',
+          onClick: () => {
+            this.closeModal();
+            if (wasRunning) this.paused = false;
+          },
+        },
+      ],
+      rowButtons: [
+        {
+          text: I18n.t('resetProgress'),
+          style: 'cream',
+          onClick: () => this.confirmResetProgress(),
+        },
       ],
     });
-    void panel;
   }
 
-  /** 提示次数用完：看一段激励广告补充 HINTS_PER_AD 次。 */
+  private confirmResetProgress(): void {
+    this.showModal({
+      title: I18n.t('resetTitle'),
+      tone: 'red',
+      lines: [I18n.t('resetBody')],
+      buttons: [
+        {
+          text: I18n.t('resetConfirm'),
+          style: 'red',
+          onClick: () => {
+            this.save.unlocked = 1;
+            this.save.stars = {};
+            this.save.hints = 3;
+            this.save.chapterPasses = {};
+            const refilled = refillEnergy(this.save, Date.now());
+            this.save.energy = refilled.energy;
+            this.save.energyAt = refilled.energyAt;
+            persist(this.save);
+            this.closeModal();
+            this.showHome();
+            this.showToast(I18n.t('resetDone'));
+          },
+        },
+        { text: I18n.t('cancel'), style: 'cream', onClick: () => this.showSettings() },
+      ],
+    });
+  }
+
   private showHintModal(): void {
     this.paused = true;
     this.showModal({
-      title: '提示用完了',
-      lines: [`看一段广告，立即补充 ${HINTS_PER_AD} 次提示`],
-      extraHeight: 110,
+      title: I18n.t('outOfHintsTitle'),
+      tone: 'gold',
+      lines: [I18n.t('hintsAdBody', { n: HINTS_PER_AD })],
+      extraHeight: 108,
       content: (panel, topY) => {
-        const pill = makePanel(panel, 300, 88, {
-          radius: 44,
-          fill: new Color(255, 248, 227, 255),
+        const pill = makePanel(panel, 312, 84, {
+          radius: 42,
+          fill: C.creamWarm,
+          border: C.yellow,
+          borderWidth: 3,
         });
-        pill.setPosition(0, topY - 44, 0);
-        makeIcon(pill, 'bulb', 48).setPosition(-66, 0, 0);
-        makeLabel(pill, `剩余 ${this.save.hints} 次`, 32, new Color(168, 107, 0, 255), {
+        pill.setPosition(0, topY - 46, 0);
+        makeIcon(pill, 'bulb', 50).setPosition(-72, 0, 0);
+        makeLabel(pill, I18n.t('hintsLeft', { n: this.save.hints }), 30, C.goldText, {
           width: 190,
-          height: 64,
+          height: 54,
         }).node.setPosition(34, 0, 0);
       },
       buttons: [
         {
-          text: `看广告 +${HINTS_PER_AD} 次`,
-          primary: true,
+          text: I18n.t('watchAdHint', { n: HINTS_PER_AD }),
+          style: 'gold',
+          icon: 'bulb',
           onClick: () => {
             this.runRewardedAd(() => {
               this.save.hints += HINTS_PER_AD;
@@ -1519,22 +2192,18 @@ export class GameRoot extends Component {
               this.updateHintBadge();
               this.closeModal();
               this.sfx.play('coin');
-              this.showToast(`+${HINTS_PER_AD} 次提示`);
+              this.showToast(I18n.t('hintGranted', { n: HINTS_PER_AD }));
             });
           },
         },
-        {
-          text: '先不用',
-          onClick: () => this.closeModal(),
-        },
+        { text: I18n.t('notNow'), style: 'cream', onClick: () => this.closeModal() },
       ],
     });
   }
 
   // ---------------------------------------------------------------- energy & ads
 
-  /** 统一入口：优先真实激励视频（微信小游戏），否则播演示广告；看完才发奖励。 */
-  private runRewardedAd(onReward: () => void, cancelMsg = '要看完整段广告才能领取哦'): void {
+  private runRewardedAd(onReward: () => void, cancelMsg = I18n.t('toastAdCancel')): void {
     if (this.adPlaying) return;
     this.adPlaying = true;
     const finish = (rewarded: boolean): void => {
@@ -1546,7 +2215,6 @@ export class GameRoot extends Component {
     this.showSimulatedAd((rewarded) => finish(rewarded));
   }
 
-  /** 体力弹窗：blocked = 因体力不足被拦下时弹出。 */
   private showEnergyModal(blocked: boolean): void {
     const wasRunning = this.running;
     if (wasRunning) this.paused = true;
@@ -1555,30 +2223,34 @@ export class GameRoot extends Component {
     const next = energyNextInMs(this.save, Date.now());
     const regenMin = Math.round(ENERGY_REGEN_MS / 60000);
     this.showModal({
-      title: blocked ? '体力不足' : '体力',
+      title: blocked ? I18n.t('outOfEnergyTitle') : I18n.t('energyTitle'),
+      tone: 'gold',
       lines: [
         full
-          ? `体力已满（${ENERGY_MAX}/${ENERGY_MAX}）`
-          : `每 ${regenMin} 分钟恢复 1 点 · 下 1 点还有 ${formatEnergyClock(next)}`,
-        '通关不扣体力，失败一关扣 1 点',
+          ? I18n.t('energyFullLine', { n: ENERGY_MAX, max: ENERGY_MAX })
+          : I18n.t('energyRegenLine', { m: regenMin, t: formatEnergyClock(next) }),
+        I18n.t('energyRuleLine'),
       ],
-      extraHeight: 120,
+      extraHeight: 112,
       content: (panel, topY) => {
-        const pill = makePanel(panel, 300, 88, {
-          radius: 44,
-          fill: new Color(255, 248, 227, 255),
+        const pill = makePanel(panel, 312, 84, {
+          radius: 42,
+          fill: C.creamWarm,
+          border: C.yellow,
+          borderWidth: 3,
         });
-        pill.setPosition(0, topY - 44, 0);
-        makeIcon(pill, 'bolt', 48).setPosition(-66, 0, 0);
-        makeLabel(pill, `${this.save.energy} / ${ENERGY_MAX}`, 38, new Color(168, 107, 0, 255), {
-          width: 170,
-          height: 64,
+        pill.setPosition(0, topY - 46, 0);
+        makeIcon(pill, 'bolt', 50).setPosition(-72, 0, 0);
+        makeLabel(pill, `${this.save.energy} / ${ENERGY_MAX}`, 36, C.goldText, {
+          width: 174,
+          height: 56,
         }).node.setPosition(34, 0, 0);
       },
       buttons: [
         {
-          text: full ? '体力已满' : '看广告 +1 体力',
-          primary: true,
+          text: full ? I18n.t('energyFullBtn') : I18n.t('watchAdEnergy'),
+          style: full ? 'cream' : 'green',
+          icon: full ? undefined : 'bolt',
           onClick: () => {
             if (this.save.energy >= ENERGY_MAX) return;
             this.runRewardedAd(
@@ -1590,21 +2262,17 @@ export class GameRoot extends Component {
                 this.updateEnergyPill();
                 this.closeModal();
                 this.sfx.play('coin');
-                this.showToast('+1 体力，出发！');
+                this.showToast(I18n.t('energyGranted'));
               },
-              '要看完整段广告才能获得体力哦',
+              I18n.t('toastAdEnergy'),
             );
           },
         },
-        {
-          text: blocked ? '稍后再来' : '知道了',
-          onClick: () => this.closeModal(),
-        },
+        { text: blocked ? I18n.t('later') : I18n.t('gotIt'), style: 'cream', onClick: () => this.closeModal() },
       ],
     });
   }
 
-  /** 没有真实广告 SDK 时的演示激励视频：倒计时看完才能领奖励。 */
   private showSimulatedAd(onEnd: (rewarded: boolean) => void): void {
     if (!this.adLayer) {
       this.adLayer = newNode('ad-layer', this.node);
@@ -1617,7 +2285,7 @@ export class GameRoot extends Component {
     const dim = newNode('dim', layer);
     setSize(dim, this.W, this.H);
     const dg = dim.addComponent(Graphics);
-    dg.fillColor = new Color(12, 26, 40, 235);
+    dg.fillColor = new Color(10, 22, 42, 240);
     dg.rect(-this.W / 2, -this.H / 2, this.W, this.H);
     dg.fill();
     dim.on(Node.EventType.TOUCH_START, (e: { propagationStopped: boolean }) => {
@@ -1627,11 +2295,15 @@ export class GameRoot extends Component {
       e.propagationStopped = true;
     });
 
-    const panel = makePanel(layer, 560, 660, {
-      radius: 40,
-      fill: C.white,
-      shadow: new Color(6, 30, 50, 70),
-      shadowOffset: 14,
+    const panel = makePanel(layer, 560, 620, {
+      radius: 38,
+      fill: C.cream,
+      bevel: C.boardFrameDark,
+      bevelHeight: 10,
+      border: C.white,
+      borderWidth: 5,
+      shadow: new Color(6, 20, 44, 120),
+      shadowOffset: 16,
     });
     panel.on(Node.EventType.TOUCH_START, (e: { propagationStopped: boolean }) => {
       e.propagationStopped = true;
@@ -1640,21 +2312,38 @@ export class GameRoot extends Component {
       e.propagationStopped = true;
     });
 
-    makeLabel(panel, '广告 · 演示', 28, C.inkSoft, { width: 400, height: 44 }).node.setPosition(
-      0,
-      250,
-      0,
-    );
-    const ring = makePanel(panel, 128, 128, { radius: 64, fill: new Color(238, 244, 249, 255) });
-    ring.setPosition(0, 130, 0);
-    const countLabel = makeLabel(ring, '5', 52, C.ink, { width: 128, height: 128 });
-    countLabel.node.setPosition(0, 0, 0);
-    makeLabel(panel, '观看完整段广告即可领取奖励\n提前关闭将无法获得奖励', 26, C.inkSoft, {
-      width: 460,
-      height: 80,
-    }).node.setPosition(0, -20, 0);
+    const ribbon = makeRibbon(panel, I18n.t('adTitle'), 400, 72, C.blue, C.blueDark, C.blueLight, 32);
+    ribbon.setPosition(0, 312, 0);
 
-    let left = 5;
+    const ringNode = newNode('ad-ring', panel);
+    ringNode.setPosition(0, 124, 0);
+    const ringGfx = ringNode.addComponent(Graphics);
+    const drawRing = (progress: number): void => {
+      ringGfx.clear();
+      const R = 68;
+      ringGfx.lineWidth = 14;
+      ringGfx.strokeColor = C.boardFrame;
+      ringGfx.circle(0, 0, R);
+      ringGfx.stroke();
+      ringGfx.strokeColor = progress >= 1 ? C.green : C.blue;
+      ringGfx.lineCap = Graphics.LineCap.ROUND;
+      const start = Math.PI / 2;
+      const end = start - Math.PI * 2 * Math.min(1, progress);
+      ringGfx.arc(0, 0, R, start, end, false);
+      ringGfx.stroke();
+    };
+    drawRing(0);
+
+    const countLabel = makeLabel(ringNode, '5', 52, C.ink, { width: 120, height: 120 });
+    countLabel.node.setPosition(0, 0, 0);
+
+    makeLabel(panel, I18n.t('adBody'), 23, C.inkSoft, {
+      width: 480,
+      height: 82,
+    }).node.setPosition(0, -18, 0);
+
+    const totalSec = 5;
+    let elapsed = 0;
     let ready = false;
     let rewarded = false;
     let done = false;
@@ -1669,14 +2358,13 @@ export class GameRoot extends Component {
     };
 
     const rewardBtn = makeButton(panel, {
-      w: 340,
-      h: 88,
+      w: 380,
+      h: 86,
       radius: 26,
-      fill: C.green,
-      shadow: new Color(46, 158, 85, 255),
-      shadowOffset: 7,
-      text: '5 秒后可领取',
-      textSize: 32,
+      style: 'green',
+      shadowOffset: 8,
+      text: I18n.t('adWait', { s: 5 }),
+      textSize: 30,
       onClick: () => {
         if (ready) {
           rewarded = true;
@@ -1684,35 +2372,40 @@ export class GameRoot extends Component {
         }
       },
     });
-    rewardBtn.node.setPosition(0, -180, 0);
+    rewardBtn.node.setPosition(0, -156, 0);
     rewardBtn.setEnabled(false);
 
     const closeBtn = makeButton(panel, {
-      w: 88,
-      h: 88,
-      radius: 26,
-      fill: new Color(238, 244, 249, 255),
-      icon: 'close',
-      iconSize: 40,
+      w: 170,
+      h: 64,
+      radius: 22,
+      style: 'cream',
+      shadowOffset: 5,
+      text: I18n.t('adClose'),
+      textSize: 25,
       onClick: () => close(),
     });
-    closeBtn.node.setPosition(0, -290, 0);
+    closeBtn.node.setPosition(0, -250, 0);
 
     const tick = (): void => {
-      left--;
+      elapsed += 0.1;
+      const p = Math.min(1, elapsed / totalSec);
+      drawRing(p);
+      const left = Math.max(0, Math.ceil(totalSec - elapsed));
       if (left > 0) {
         countLabel.string = String(left);
-        rewardBtn.setText(`${left} 秒后可领取`);
-        this.scheduleOnce(tick, 1);
-      } else {
+        rewardBtn.setText(I18n.t('adWait', { s: left }));
+      } else if (!ready) {
         ready = true;
         countLabel.string = '✓';
-        rewardBtn.setText('领取奖励');
+        countLabel.color = C.green;
+        rewardBtn.setText(I18n.t('adClaim'));
         rewardBtn.setEnabled(true);
+        this.unschedule(tick);
       }
     };
 
-    this.scheduleOnce(tick, 1);
+    this.schedule(tick, 0.1);
     popIn(panel, 0.02);
   }
 }

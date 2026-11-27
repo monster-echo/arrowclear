@@ -1,6 +1,5 @@
 import { Arrow, DIR_VECTORS, Level, bossShadowCells, cellKey, corridorCells } from './types';
 import { Rng } from './rng';
-import { frozenAdjacencies, freeAtStartCount, solveGreedyFrozen } from './frozen';
 
 /**
  * Pure, engine-independent level scoring.
@@ -159,13 +158,6 @@ function blockerGraph(level: Level): { blockers: Map<number, Set<number>>; depen
       if (owner && owner.id !== a.id) blockers.get(a.id)!.add(owner.id);
     }
   }
-  // 冰冻箭（规则书 §4）：起飞前提是「≥2 支相邻箭飞走」。评分口径取保守近似：
-  // 冻结箭依赖其全部相邻箭（高估深度，但保证它绝不会被当成自由箭）。
-  const adj = frozenAdjacencies(level);
-  for (const a of level.arrows) {
-    if (!a.frozen) continue;
-    for (const n of adj.get(a.id) ?? []) blockers.get(a.id)!.add(n);
-  }
   for (const [id, bs] of blockers) {
     for (const b of bs) dependents.get(b)!.add(id);
   }
@@ -267,10 +259,8 @@ function analyzeDistribution(level: Level): DistributionStats {
 }
 
 function analyzeDependencies(level: Level, blockers: Map<number, Set<number>>, dependents: Map<number, Set<number>>): DependencyStats {
-  // 可解性判定：有冰冻箭时用冰冻感知贪心（完备），否则用普通贪心。
-  const solvableCheck = level.arrows.some((a) => a.frozen)
-    ? (() => solveGreedyFrozen(level).solved)()
-    : (() => {
+  // 可解性判定：普通贪心（完备）。
+  const solvableCheck = (() => {
       const alive = new Set(level.arrows.map((a) => a.id));
       const occ = new Set<number>();
       for (const a of level.arrows) for (const c of a.cells) occ.add(c.y * 4096 + c.x);
@@ -311,7 +301,7 @@ function analyzeDependencies(level: Level, blockers: Map<number, Set<number>>, d
   for (const a of level.arrows) chainDepth = Math.max(chainDepth, depth(a.id));
 
   const free0 = level.arrows
-    .filter((a) => !a.frozen && blockers.get(a.id)!.size === 0)
+    .filter((a) => blockers.get(a.id)!.size === 0)
     .map((a) => a.id);
   const trials = 240;
   let forced = 0;

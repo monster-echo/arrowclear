@@ -1,8 +1,7 @@
 name: ci
 
-# The repo's own check chain: TS types, core rule tests, level validation,
-# Cocos project validation, and the CDP-driven web E2E (runner Chrome via
-# CHROME_PATH).
+# The repo's own check chain: Cocos TS types, core rule tests, level validation,
+# and Cocos project static validation.
 
 on:
   push:
@@ -20,8 +19,6 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      CHROME_PATH: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,18 +26,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Type check + core + levels + project + E2E
+      - name: Type check + core + levels + Cocos project validation
         run: |
-          npm run check
           npm run check:cocos
           npm run test:levels
           npm run test:core
           npm run test:project
-          npm run test:e2e
-      - name: Upload E2E artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-artifacts
-          path: tests/artifacts/
-          if-no-files-found: ignore

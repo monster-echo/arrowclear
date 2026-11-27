@@ -1,5 +1,3 @@
-import { ARROW_PALETTE_RGB } from '../core/palette';
-import { frozenAdjacencies, isUnfrozen } from '../core/frozen';
 import {
   _decorator,
   Color,
@@ -22,6 +20,7 @@ import {
   cellKey,
   corridorCells,
 } from '../core/types';
+import { ARROW_PALETTE_CASUAL } from './Theme';
 import { newNode, setSize } from './UIKit';
 
 const { ccclass } = _decorator;
@@ -32,8 +31,6 @@ interface ArrowView {
   body: Graphics;
   glowNode: Node;
   glow: Graphics;
-  iceNode: Node | null;
-  ice: Graphics | null;
   opacity: UIOpacity;
   base: Vec3;
 }
@@ -59,28 +56,48 @@ interface BlockFx {
   dur: number;
 }
 
-const INK = new Color(34, 37, 45, 255);
-const PALETTE = ARROW_PALETTE_RGB.map(([r, g, b]) => new Color(r, g, b, 255));
-const DOT = new Color(185, 190, 201, 255);
-const EDGE = new Color(122, 128, 142, 72);
-const RED = new Color(214, 74, 66, 255);
-const HINT = new Color(214, 162, 63, 255);
-/** Boss 箭专属蓝（参考实现 #2B7FFF）与大眼表情色。 */
-const BOSS_BLUE = new Color(43, 127, 255, 255);
-const BOSS_EYE_DARK = new Color(15, 23, 42, 255);
-/** 冰壳：半透明冰蓝加厚描边，裂纹随解冻进度加深。 */
-const ICE_SHELL = new Color(202, 235, 250, 205);
-const ICE_CRACK = new Color(96, 165, 210, 235);
-/** 图案关底色：清空的格子逐渐露出「画」，按剪影 id 稳定取色。 */
+interface SparkFx {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  color: Color;
+  t: number;
+  dur: number;
+  gravity: number;
+}
+
+const PALETTE = ARROW_PALETTE_CASUAL;
+const DOT = new Color(196, 206, 220, 255);
+const SHADOW_COLOR = new Color(18, 45, 82, 34);
+const RED = new Color(242, 76, 70, 255);
+const HINT = new Color(255, 198, 42, 255);
+const BOSS_BLUE = new Color(36, 128, 248, 255);
+const BOSS_OUTLINE = new Color(16, 62, 134, 255);
+const BOSS_SHEEN = new Color(140, 220, 255, 115);
+const BOSS_EYE_DARK = new Color(15, 29, 54, 255);
+const BOSS_STAR_GOLD = new Color(255, 196, 28, 255);
+
+const CONFETTI_COLORS = [
+  new Color(255, 199, 44, 255),
+  new Color(55, 202, 74, 255),
+  new Color(46, 155, 247, 255),
+  new Color(242, 82, 76, 255),
+  new Color(148, 102, 247, 255),
+  new Color(255, 140, 46, 255),
+];
+
+/** Warm soft pastel picture-reveal tints on the ivory board mat. */
 const PICTURE_TINTS = [
-  new Color(198, 226, 245, 235),
-  new Color(245, 214, 220, 235),
-  new Color(212, 238, 217, 235),
-  new Color(247, 231, 200, 235),
-  new Color(223, 216, 245, 235),
-  new Color(214, 233, 244, 235),
-  new Color(240, 222, 214, 235),
-  new Color(216, 240, 231, 235),
+  new Color(198, 232, 252, 235),
+  new Color(252, 214, 224, 235),
+  new Color(210, 244, 216, 235),
+  new Color(255, 236, 198, 235),
+  new Color(228, 216, 252, 235),
+  new Color(204, 240, 242, 235),
+  new Color(248, 224, 208, 235),
+  new Color(212, 244, 232, 235),
 ];
 
 function pictureTintFor(shape: string | undefined): Color {
@@ -90,7 +107,6 @@ function pictureTintFor(shape: string | undefined): Color {
   return PICTURE_TINTS[h % PICTURE_TINTS.length];
 }
 
-/** Head-leading, tail-following exit animation for one arrow. */
 interface RailPoint {
   x: number;
   y: number;
@@ -114,24 +130,17 @@ export class BoardView extends Component {
 
   private dots: DotFx[] = [];
   private flying: FlyFx[] = [];
+  private sparks: SparkFx[] = [];
   private blockFx: BlockFx | null = null;
   private edgeSegments: [number, number, number, number][] = [];
   private maskArea = 1;
   private paperDirty = true;
-  /** 冰冻运行态：邻接表 / 已飞箭 / 仍处于冻结的箭（解冻后移除）。 */
-  private frozenAdj = new Map<number, Set<number>>();
-  private removedIds = new Set<number>();
-  private activeFrozen = new Set<number>();
   private pictureTint: Color = PICTURE_TINTS[0];
 
   /** GameRoot flips this off while paused / after the level ends. */
   inputEnabled = true;
   onArrowCleared: ((arrow: Arrow) => void) | null = null;
   onArrowBlocked: ((arrow: Arrow, blocker: Arrow | null) => void) | null = null;
-  /** 点了还冻结着的箭：不扣爱心，交给 GameRoot 提示。 */
-  onFrozenTap: ((arrow: Arrow) => void) | null = null;
-  /** 一支箭解冻瞬间（演出钩子）。 */
-  onArrowUnfrozen: ((arrow: Arrow) => void) | null = null;
 
   layout(w: number, h: number): void {
     this.bw = w;
@@ -150,17 +159,13 @@ export class BoardView extends Component {
     this.occupancy.clear();
     this.dots = [];
     this.flying = [];
+    this.sparks = [];
     this.blockFx = null;
     this.edgeSegments = [];
     this.maskArea = 1;
-    // 冰冻运行态：邻接表与冻结集合按关卡数据重建。
-    this.frozenAdj = frozenAdjacencies(level);
-    this.removedIds = new Set();
-    this.activeFrozen = new Set(level.arrows.filter((a) => a.frozen).map((a) => a.id));
     this.pictureTint = pictureTintFor(level.mask ? level.shape : undefined);
     for (const a of level.arrows) {
       for (const c of a.cells) this.occupancy.set(cellKey(c), a);
-      // Boss 双倍宽：影子格同样命中 Boss。
       if (a.isBoss) {
         for (const c of a.cells) {
           if (c.x + 1 < level.cols) this.occupancy.set(cellKey({ x: c.x + 1, y: c.y }), a);
@@ -228,27 +233,18 @@ export class BoardView extends Component {
 
       const bodyNode = newNode('body', node);
       const body = bodyNode.addComponent(Graphics);
-      let iceNode: Node | null = null;
-      let ice: Graphics | null = null;
-      if (arrow.frozen) {
-        iceNode = newNode('ice', node);
-        ice = iceNode.addComponent(Graphics);
-      }
       const view: ArrowView = {
         arrow,
         node,
         body,
         glowNode,
         glow,
-        iceNode,
-        ice,
         opacity,
         base: new Vec3(centroid.x, centroid.y, 0),
       };
       this.views.set(arrow.id, view);
       this.paintArrow(view);
       this.paintGlow(view);
-      if (ice && arrow.frozen) this.paintIce(view, 0);
     });
   }
 
@@ -277,10 +273,36 @@ export class BoardView extends Component {
     });
   }
 
-  private traceArrow(g: Graphics, view: ArrowView, dx = 0, dy = 0): void {
-    const pts = this.localCells(view);
-    g.moveTo(pts[pts.length - 1].x + dx, pts[pts.length - 1].y + dy);
-    for (let i = pts.length - 2; i >= 0; i--) g.lineTo(pts[i].x + dx, pts[i].y + dy);
+  /** Smooth rounded-bend path from tail to head. */
+  private traceSmoothPts(g: Graphics, pts: { x: number; y: number }[], dx = 0, dy = 0): void {
+    if (!pts.length) return;
+    const rev: { x: number; y: number }[] = [];
+    for (let i = pts.length - 1; i >= 0; i--) {
+      rev.push({ x: pts[i].x + dx, y: pts[i].y + dy });
+    }
+    g.moveTo(rev[0].x, rev[0].y);
+    if (rev.length === 1) return;
+    for (let i = 1; i < rev.length - 1; i++) {
+      const a = rev[i - 1];
+      const p = rev[i];
+      const b = rev[i + 1];
+      const l1 = Math.abs(p.x - a.x) + Math.abs(p.y - a.y);
+      const l2 = Math.abs(b.x - p.x) + Math.abs(b.y - p.y);
+      const turn = (p.x - a.x) * (b.y - p.y) - (p.y - a.y) * (b.x - p.x) !== 0;
+      if (!turn) {
+        g.lineTo(p.x, p.y);
+        continue;
+      }
+      const r = Math.min(this.cell * 0.34, l1 / 2, l2 / 2);
+      const u1x = (p.x - a.x) / (l1 || 1);
+      const u1y = (p.y - a.y) / (l1 || 1);
+      const u2x = (b.x - p.x) / (l2 || 1);
+      const u2y = (b.y - p.y) / (l2 || 1);
+      g.lineTo(p.x - u1x * r, p.y - u1y * r);
+      g.quadraticCurveTo(p.x, p.y, p.x + u2x * r, p.y + u2y * r);
+    }
+    const last = rev[rev.length - 1];
+    g.lineTo(last.x, last.y);
   }
 
   private paintArrow(view: ArrowView): void {
@@ -292,156 +314,172 @@ export class BoardView extends Component {
     g.lineJoin = Graphics.LineJoin.ROUND;
     const isBoss = !!view.arrow.isBoss;
     const ink = isBoss ? BOSS_BLUE : PALETTE[view.arrow.color % PALETTE.length];
-    // Boss 双倍宽：整体向右偏移半格、线宽约 1.55 格 —— 视觉上覆盖两列，
-    // 对应它「两条射线都必须畅通」的规则。
     const dx = isBoss ? this.cell * 0.5 : 0;
-    g.lineWidth = isBoss ? this.cell * 1.55 : w;
-    g.strokeColor = ink;
-    g.fillColor = ink;
     const dir = DIR_VECTORS[view.arrow.dir];
     const d = { x: dir.x, y: -dir.y };
-    g.moveTo(pts[pts.length - 1].x + dx, pts[pts.length - 1].y);
-    for (let i = pts.length - 2; i >= 0; i--) g.lineTo(pts[i].x + dx, pts[i].y);
+    const drop = Math.max(1.5, this.cell * 0.08);
+
+    // Soft tactile drop shadow on the cream mat
+    g.lineWidth = isBoss ? this.cell * 1.62 : w + 1.2;
+    g.strokeColor = SHADOW_COLOR;
+    this.traceSmoothPts(g, pts, dx, -drop);
     g.stroke();
+
     if (isBoss) {
-      this.drawBossHead(g, view, { x: pts[0].x + dx, y: pts[0].y }, d, ink);
-      this.drawBossFace(g, view, d, dx);
+      // Crisp navy cartoon outline on giant Boss arrow
+      g.lineWidth = this.cell * 1.68;
+      g.strokeColor = BOSS_OUTLINE;
+      this.traceSmoothPts(g, pts, dx, 0);
+      g.stroke();
+    }
+
+    // Main vibrant arrow body
+    g.lineWidth = isBoss ? this.cell * 1.48 : w;
+    g.strokeColor = ink;
+    g.fillColor = ink;
+    this.traceSmoothPts(g, pts, dx, 0);
+    g.stroke();
+
+    if (isBoss) {
+      // Glossy top sheen along boss body
+      g.lineWidth = this.cell * 0.42;
+      g.strokeColor = BOSS_SHEEN;
+      this.traceSmoothPts(g, pts, dx - this.cell * 0.28, this.cell * 0.14);
+      g.stroke();
+      this.drawBossHead(g, { x: pts[0].x + dx, y: pts[0].y }, d, ink);
+      this.drawBossFace(g, view.arrow, d, dx);
     } else {
-      this.drawHead(g, view, pts[0], d, ink);
+      this.drawHead(g, pts[0], d, ink);
     }
   }
 
-  /** Boss 大号箭头。 */
-  private drawBossHead(
-    g: Graphics,
-    view: ArrowView,
-    head: { x: number; y: number },
-    d: Cell,
-    ink: Color,
-  ): void {
+  private drawBossHead(g: Graphics, head: { x: number; y: number }, d: Cell, ink: Color): void {
     const angle = Math.atan2(d.y, d.x);
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    // 大三角必须比 1.55 格宽的身体更宽，否则会被身体盖住看不出朝向。
-    const tip = this.cell * 0.98;
-    const base = -this.cell * 0.22;
-    const half = this.cell * 1.05;
     const map = (x: number, y: number) => ({
       x: head.x + x * cos - y * sin,
       y: head.y + x * sin + y * cos,
     });
+
+    // Navy outline behind triangle
+    const oTip = this.cell * 1.1;
+    const oBase = -this.cell * 0.28;
+    const oHalf = this.cell * 1.16;
+    const op = [map(oTip, 0), map(oBase, -oHalf), map(oBase, oHalf)];
+    g.fillColor = BOSS_OUTLINE;
+    g.moveTo(op[0].x, op[0].y);
+    g.lineTo(op[1].x, op[1].y);
+    g.lineTo(op[2].x, op[2].y);
+    g.close();
+    g.fill();
+
+    // Main blue arrowhead
+    const tip = this.cell * 0.96;
+    const base = -this.cell * 0.2;
+    const half = this.cell * 1.02;
     const p = [map(tip, 0), map(base, -half), map(base, half)];
+    g.fillColor = ink;
     g.moveTo(p[0].x, p[0].y);
     g.lineTo(p[1].x, p[1].y);
     g.lineTo(p[2].x, p[2].y);
     g.close();
     g.fill();
-    void view;
   }
 
-  /** Boss 大眼表情：白眼球 + 黑瞳孔 + 怒眉（画在箭身中段，横跨双倍宽）。 */
-  private drawBossFace(g: Graphics, view: ArrowView, d: Cell, dx = 0): void {
-    // 身体朝向 d；眼睛沿垂直方向排开，眉毛朝箭头一侧。
+  /** Expressive Boss cartoon eyes: focused pupils when blocked, golden sparkle-eyes when unlocked! */
+  private drawBossFace(g: Graphics, arrow: Arrow, d: Cell, dx = 0): void {
     const px = -d.y;
     const py = d.x;
     const eyeOff = this.cell * 0.4;
-    const eyeR = Math.max(3.5, this.cell * 0.26);
-    const pupilR = eyeR * 0.45;
+    const eyeR = Math.max(4, this.cell * 0.28);
+    const pupilR = eyeR * 0.48;
     const browOff = this.cell * 0.12;
+    const free = this.isFree(arrow);
+
     for (const side of [-1, 1]) {
       const ex = px * eyeOff * side + d.x * browOff + dx;
       const ey = py * eyeOff * side + d.y * browOff;
+
+      // White sclera + crisp outline
+      g.fillColor = BOSS_EYE_DARK;
+      g.circle(ex, ey, eyeR + 1.5);
+      g.fill();
       g.fillColor = Color.WHITE;
       g.circle(ex, ey, eyeR);
       g.fill();
-      g.fillColor = BOSS_EYE_DARK;
-      g.circle(ex + d.x * eyeR * 0.25, ey + d.y * eyeR * 0.25, pupilR);
-      g.fill();
-      // 怒眉。
-      g.lineWidth = Math.max(1.6, this.cell * 0.07);
+
+      if (free) {
+        // Golden star-sparkle eye when Boss is ready to fly!
+        g.fillColor = BOSS_STAR_GOLD;
+        const sr = eyeR * 0.62;
+        g.moveTo(ex, ey + sr);
+        g.lineTo(ex + sr * 0.3, ey + sr * 0.3);
+        g.lineTo(ex + sr, ey);
+        g.lineTo(ex + sr * 0.3, ey - sr * 0.3);
+        g.lineTo(ex, ey - sr);
+        g.lineTo(ex - sr * 0.3, ey - sr * 0.3);
+        g.lineTo(ex - sr, ey);
+        g.lineTo(ex - sr * 0.3, ey + sr * 0.3);
+        g.close();
+        g.fill();
+      } else {
+        const pupX = ex + d.x * eyeR * 0.22;
+        const pupY = ey + d.y * eyeR * 0.22;
+        g.fillColor = BOSS_EYE_DARK;
+        g.circle(pupX, pupY, pupilR);
+        g.fill();
+        // Eye catchlight
+        g.fillColor = Color.WHITE;
+        g.circle(pupX - pupilR * 0.35, pupY + pupilR * 0.35, pupilR * 0.34);
+        g.fill();
+      }
+
+      // Expressive brow
+      g.lineWidth = Math.max(2, this.cell * 0.08);
       g.strokeColor = BOSS_EYE_DARK;
-      g.moveTo(ex - px * eyeR * 0.85 + d.x * eyeR * 0.5, ey - py * eyeR * 0.85 + d.y * eyeR * 0.5);
-      g.lineTo(ex + px * eyeR * 0.7 + d.x * eyeR * 1.1, ey + py * eyeR * 0.7 + d.y * eyeR * 1.1);
+      g.moveTo(ex - px * eyeR * 0.85 + d.x * eyeR * 0.55, ey - py * eyeR * 0.85 + d.y * eyeR * 0.55);
+      g.lineTo(ex + px * eyeR * 0.72 + d.x * eyeR * 1.05, ey + py * eyeR * 0.72 + d.y * eyeR * 1.05);
       g.stroke();
     }
-    void view;
   }
 
-  private drawHead(g: Graphics, view: ArrowView, head: { x: number; y: number }, d: Cell, ink: Color): void {
+  private drawHead(g: Graphics, head: { x: number; y: number }, d: Cell, ink: Color): void {
     const angle = Math.atan2(d.y, d.x);
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    const tip = this.cell * 0.4;
-    const base = -this.cell * 0.13;
-    const half = this.cell * 0.18;
+    const tip = this.cell * 0.42;
+    const base = -this.cell * 0.14;
+    const half = this.cell * 0.21;
     const map = (x: number, y: number) => ({
       x: head.x + x * cos - y * sin,
       y: head.y + x * sin + y * cos,
     });
     const p = [map(tip, 0), map(base, -half), map(base, half)];
+    g.fillColor = ink;
     g.moveTo(p[0].x, p[0].y);
     g.lineTo(p[1].x, p[1].y);
     g.lineTo(p[2].x, p[2].y);
     g.close();
     g.fill();
-    void view;
   }
 
   private strokeWidth(): number {
-    return Math.max(2.2, Math.min(6.2, this.cell * 0.185));
+    return Math.max(2.6, Math.min(7.2, this.cell * 0.21));
   }
 
   private paintGlow(view: ArrowView): void {
     const g = view.glow;
     const pts = this.localCells(view);
     const w = this.strokeWidth();
+    const dx = view.arrow.isBoss ? this.cell * 0.5 : 0;
     g.clear();
-    g.lineWidth = w + this.cell * 0.22;
+    g.lineWidth = (view.arrow.isBoss ? this.cell * 1.65 : w) + this.cell * 0.34;
     g.lineCap = Graphics.LineCap.ROUND;
     g.lineJoin = Graphics.LineJoin.ROUND;
     g.strokeColor = HINT;
-    g.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
-    for (let i = pts.length - 2; i >= 0; i--) g.lineTo(pts[i].x, pts[i].y);
+    this.traceSmoothPts(g, pts, dx, 0);
     g.stroke();
-  }
-
-  /**
-   * 冰壳：加厚的半透明冰蓝描边。cracks = 已飞走的相邻箭数（0/1），
-   * 1 条裂纹预示「再清一支就解冻」。
-   */
-  private paintIce(view: ArrowView, cracks: number): void {
-    const g = view.ice;
-    if (!g) return;
-    const pts = this.localCells(view);
-    g.clear();
-    const w = this.strokeWidth();
-    g.lineWidth = w + this.cell * 0.34;
-    g.lineCap = Graphics.LineCap.ROUND;
-    g.lineJoin = Graphics.LineJoin.ROUND;
-    g.strokeColor = ICE_SHELL;
-    g.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
-    for (let i = pts.length - 2; i >= 0; i--) g.lineTo(pts[i].x, pts[i].y);
-    g.stroke();
-    // 裂纹：横跨箭身的短线，数量 = cracks。
-    g.lineWidth = Math.max(1.5, w * 0.28);
-    g.strokeColor = ICE_CRACK;
-    for (let k = 0; k < cracks && k < 2; k++) {
-      const idx = Math.max(1, Math.floor((pts.length * (k + 1)) / 3));
-      const p = pts[Math.min(idx, pts.length - 1)];
-      const half = this.cell * 0.34;
-      g.moveTo(p.x - half * 0.5, p.y - half);
-      g.lineTo(p.x + half * 0.4, p.y + half * 0.9);
-      g.stroke();
-    }
-  }
-
-  /** 某支冻结箭当前已飞走的相邻箭数（0..2）。 */
-  private crackCount(arrowId: number): number {
-    let hits = 0;
-    for (const n of this.frozenAdj.get(arrowId) ?? []) {
-      if (this.removedIds.has(n)) hits++;
-    }
-    return Math.min(2, hits);
   }
 
   private redrawPaper(): void {
@@ -449,7 +487,6 @@ export class BoardView extends Component {
     if (!g || !this.level) return;
     g.clear();
 
-    // 图案关：已被清空的剪影格子露出「画」的底色（揭画进度即清盘进度）。
     if (this.level.mask) {
       g.fillColor = this.pictureTint;
       for (let y = 0; y < this.level.rows; y++) {
@@ -457,20 +494,26 @@ export class BoardView extends Component {
           if (this.level.mask[y * this.level.cols + x] !== 1) continue;
           if (this.occupancy.has(cellKey({ x, y }))) continue;
           const p = this.cellCenter(x, y);
-          const s = this.cell * 0.92;
-          g.rect(p.x - s / 2, p.y - s / 2, s, s);
+          const s = this.cell * 0.94;
+          g.roundRect(p.x - s / 2, p.y - s / 2, s, s, Math.max(2, this.cell * 0.14));
         }
       }
       g.fill();
-      // 剪影轮廓：让「这是一幅画」在开局就可读。
       if (this.edgeSegments.length) {
-        g.lineWidth = Math.max(1.2, this.cell * 0.06);
-        g.strokeColor = new Color(this.pictureTint.r, this.pictureTint.g, this.pictureTint.b, 160);
+        g.lineWidth = Math.max(1.4, this.cell * 0.065);
+        g.strokeColor = new Color(
+          Math.max(0, this.pictureTint.r - 40),
+          Math.max(0, this.pictureTint.g - 40),
+          Math.max(0, this.pictureTint.b - 40),
+          145,
+        );
         for (const [x1, y1, x2, y2] of this.edgeSegments) {
-          const a = this.cellCenter(x1, y1);
-          const b = this.cellCenter(x2, y2);
-          g.moveTo(a.x, a.y);
-          g.lineTo(b.x, b.y);
+          const ax = -this.bw / 2 + x1 * this.cell;
+          const ay = this.bh / 2 - y1 * this.cell;
+          const bx = -this.bw / 2 + x2 * this.cell;
+          const by = this.bh / 2 - y2 * this.cell;
+          g.moveTo(ax, ay);
+          g.lineTo(bx, by);
         }
         g.stroke();
       }
@@ -485,7 +528,7 @@ export class BoardView extends Component {
       g.circle(
         -this.bw / 2 + (dot.x + 0.5) * this.cell,
         this.bh / 2 - (dot.y + 0.5) * this.cell,
-        Math.max(1.5, this.cell * 0.085) * (0.4 + 0.6 * p),
+        Math.max(1.6, this.cell * 0.09) * (0.4 + 0.6 * p),
       );
     }
     if (any) g.fill();
@@ -495,21 +538,14 @@ export class BoardView extends Component {
 
   isFree(arrow: Arrow): boolean {
     if (!this.level) return false;
-    // Boss OR 语义：头部射线或头右侧射线任一畅通即可飞。
     return canArrowEscape(this.level, arrow, (c) => {
       const owner = this.occupancy.get(cellKey(c));
       return !!owner && this.alive.has(owner.id) && owner.id !== arrow.id;
     });
   }
 
-  /** 还冻结着（未解冻）？冻结箭不是合法点击目标。 */
-  isFrozenActive(arrow: Arrow): boolean {
-    return !!arrow.frozen && this.activeFrozen.has(arrow.id);
-  }
-
-  /** 合法可飞 = 航道干净 && 未被冻结（提示与自动演示都用它）。 */
   isPlayable(arrow: Arrow): boolean {
-    return !this.isFrozenActive(arrow) && this.isFree(arrow);
+    return this.isFree(arrow);
   }
 
   blockerOf(arrow: Arrow): Arrow | null {
@@ -550,9 +586,9 @@ export class BoardView extends Component {
     if (!view) return;
     view.glowNode.active = true;
     const op = view.glowNode.getComponent(UIOpacity) || view.glowNode.addComponent(UIOpacity);
-    op.opacity = 70;
+    op.opacity = 85;
     tween(op)
-      .repeatForever(tween(op).to(0.42, { opacity: 210 }).to(0.42, { opacity: 70 }))
+      .repeatForever(tween(op).to(0.4, { opacity: 225 }).to(0.4, { opacity: 85 }))
       .start();
   }
 
@@ -575,6 +611,47 @@ export class BoardView extends Component {
     };
   }
 
+  /** Victory confetti burst across the board! */
+  celebrate(): void {
+    for (let i = 0; i < 48; i++) {
+      const angle = (Math.PI * 0.15) + Math.random() * (Math.PI * 0.7);
+      const speed = 220 + Math.random() * 340;
+      const side = i % 2 === 0 ? -1 : 1;
+      this.sparks.push({
+        x: side * (this.bw * 0.25) + (Math.random() - 0.5) * 90,
+        y: -this.bh * 0.1 + (Math.random() - 0.5) * 80,
+        vx: Math.cos(angle) * speed * (Math.random() > 0.5 ? 1 : -1) * 0.7,
+        vy: Math.sin(angle) * speed,
+        r: 5 + Math.random() * 6,
+        color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+        t: 0,
+        dur: 0.9 + Math.random() * 0.5,
+        gravity: 680,
+      });
+    }
+  }
+
+  private spawnClearSparks(arrow: Arrow): void {
+    const head = this.cellCenter(arrow.cells[0].x, arrow.cells[0].y);
+    const col = arrow.isBoss ? BOSS_BLUE : PALETTE[arrow.color % PALETTE.length];
+    const count = arrow.isBoss ? 14 : 6;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + Math.random() * 0.5;
+      const spd = 70 + Math.random() * 110;
+      this.sparks.push({
+        x: head.x + (arrow.isBoss ? this.cell * 0.5 : 0),
+        y: head.y,
+        vx: Math.cos(a) * spd,
+        vy: Math.sin(a) * spd,
+        r: Math.max(2.5, this.cell * (arrow.isBoss ? 0.18 : 0.12)),
+        color: i % 2 === 0 ? col : BOSS_STAR_GOLD,
+        t: 0,
+        dur: 0.32 + Math.random() * 0.16,
+        gravity: 160,
+      });
+    }
+  }
+
   private onTouchStart(event: EventTouch): void {
     if (!this.level || !this.inputEnabled) return;
     const ui = event.getUILocation();
@@ -587,12 +664,6 @@ export class BoardView extends Component {
     const arrow = this.occupancy.get(cellKey({ x: cx, y: cy }));
     if (!arrow || !this.alive.has(arrow.id)) return;
 
-    if (this.isFrozenActive(arrow)) {
-      // 冻结箭：抖动反馈，不扣爱心、不算撞墙。
-      this.bumpArrow(arrow);
-      this.onFrozenTap?.(arrow);
-      return;
-    }
     if (this.isFree(arrow)) {
       this.clearArrow(arrow);
     } else {
@@ -616,58 +687,19 @@ export class BoardView extends Component {
         if (owner && owner.id === arrow.id) this.occupancy.delete(key);
       }
     }
+    this.spawnClearSparks(arrow);
     const view = this.views.get(arrow.id);
     if (view) {
       this.views.delete(arrow.id);
       this.flyOut(arrow, view);
     }
     if (this.hintId === arrow.id) this.hintId = null;
-    this.removedIds.add(arrow.id);
-    this.refreshFrozen(arrow.id);
-    this.onArrowCleared?.(arrow);
-  }
 
-  /**
-   * 一支箭飞走后的冰冻结算：其余冻结箭的裂纹 +1；达到 2 支相邻箭的
-   * 立即解冻（冰壳碎裂演出）。
-   */
-  private refreshFrozen(removedId: number): void {
-    if (!this.activeFrozen.size) return;
-    for (const frozenId of [...this.activeFrozen]) {
-      const view = this.views.get(frozenId);
-      if (!view) {
-        this.activeFrozen.delete(frozenId);
-        continue;
-      }
-      if (isUnfrozen(frozenId, this.removedIds, this.frozenAdj)) {
-        this.activeFrozen.delete(frozenId);
-        this.shatterIce(view);
-        this.onArrowUnfrozen?.(view.arrow);
-      } else {
-        this.paintIce(view, this.crackCount(frozenId));
-      }
+    // Refresh any surviving Boss arrow so its eyes light up gold the moment it becomes free!
+    for (const v of this.views.values()) {
+      if (v.arrow.isBoss) this.paintArrow(v);
     }
-    void removedId;
-  }
-
-  /** 冰壳碎裂：淡出 + 轻微弹跳。 */
-  private shatterIce(view: ArrowView): void {
-    const iceNode = view.iceNode;
-    if (!iceNode) return;
-    const op = iceNode.getComponent(UIOpacity) || iceNode.addComponent(UIOpacity);
-    Tween.stopAllByTarget(op);
-    Tween.stopAllByTarget(view.node);
-    view.node.setPosition(view.base);
-    tween(view.node)
-      .to(0.08, { scale: new Vec3(1.12, 1.12, 1) })
-      .to(0.14, { scale: new Vec3(1, 1, 1) })
-      .start();
-    tween(op)
-      .to(0.3, { opacity: 0 })
-      .call(() => iceNode.destroy())
-      .start();
-    view.ice = null;
-    view.iceNode = null;
+    this.onArrowCleared?.(arrow);
   }
 
   private flyOut(arrow: Arrow, view: ArrowView): void {
@@ -675,7 +707,6 @@ export class BoardView extends Component {
     const bodyLen = Math.max(1, n - 1) * this.cell;
     const exitPad = Math.hypot(this.bw, this.bh) + this.cell * 4;
     const total = bodyLen + exitPad;
-    // 大盘提速（规则书 §12）：格子越小飞得越快，箭越多节奏越紧凑。
     const speedK = Math.max(0.55, Math.min(1, this.cell / 40));
     const dur = Math.min(1.05, Math.max(0.42, (0.55 + n * 0.03) * speedK));
     this.flying.push({ arrow, t: 0, dur });
@@ -697,15 +728,15 @@ export class BoardView extends Component {
     const view = this.views.get(arrow.id);
     if (!view) return;
     const dir = DIR_VECTORS[arrow.dir];
-    const px = -dir.y * 7;
-    const py = -dir.x * 7;
+    const px = -dir.y * 8;
+    const py = -dir.x * 8;
     Tween.stopAllByTarget(view.node);
     view.node.setPosition(view.base);
     tween(view.node)
-      .to(0.05, { position: new Vec3(view.base.x + px, view.base.y + py, 0) })
-      .to(0.05, { position: new Vec3(view.base.x - px, view.base.y - py, 0) })
-      .to(0.05, { position: new Vec3(view.base.x + px * 0.6, view.base.y + py * 0.6, 0) })
-      .to(0.05, { position: view.base })
+      .to(0.045, { position: new Vec3(view.base.x + px, view.base.y + py, 0) })
+      .to(0.045, { position: new Vec3(view.base.x - px, view.base.y - py, 0) })
+      .to(0.045, { position: new Vec3(view.base.x + px * 0.55, view.base.y + py * 0.55, 0) })
+      .to(0.045, { position: view.base })
       .start();
   }
 
@@ -716,19 +747,18 @@ export class BoardView extends Component {
       view.node.setPosition(view.base);
       this.paintArrow(view);
       this.paintGlow(view);
-      if (view.ice && this.isFrozenActive(view.arrow)) {
-        this.paintIce(view, this.crackCount(view.arrow.id));
-      }
     }
   }
 
-  // ---------------------------------------------------------------- flight
+  // ---------------------------------------------------------------- flight & fx
 
   private buildRail(arrow: Arrow): { pts: RailPoint[]; bodyLen: number; total: number } {
     const pts: RailPoint[] = [];
     let s = 0;
+    const dx = arrow.isBoss ? this.cell * 0.5 : 0;
     for (let i = arrow.cells.length - 1; i >= 0; i--) {
       const c = this.cellCenter(arrow.cells[i].x, arrow.cells[i].y);
+      c.x += dx;
       if (pts.length) s += Math.hypot(c.x - pts[pts.length - 1].x, c.y - pts[pts.length - 1].y);
       pts.push({ x: c.x, y: c.y, s });
     }
@@ -777,7 +807,7 @@ export class BoardView extends Component {
       const p = Math.min(1, f.t / f.dur);
       const d = total * p;
       const outline = this.bodyPath(pts, d, bodyLen + d);
-      g.lineWidth = f.arrow.isBoss ? w * 2.3 : w;
+      g.lineWidth = f.arrow.isBoss ? this.cell * 1.48 : w;
       g.lineCap = Graphics.LineCap.ROUND;
       g.lineJoin = Graphics.LineJoin.ROUND;
       const flyColor = f.arrow.isBoss ? BOSS_BLUE : PALETTE[f.arrow.color % PALETTE.length];
@@ -788,7 +818,7 @@ export class BoardView extends Component {
 
       const head = this.pointAt(pts, bodyLen + d);
       const dir = DIR_VECTORS[f.arrow.dir];
-      this.drawHeadAt(g, head, { x: dir.x, y: -dir.y }, flyColor, f.arrow.isBoss ? 1.8 : 1);
+      this.drawHeadAt(g, head, { x: dir.x, y: -dir.y }, flyColor, f.arrow.isBoss ? 2.2 : 1);
     }
     this.flying = this.flying.filter((f) => f.t < f.dur);
 
@@ -801,8 +831,9 @@ export class BoardView extends Component {
       } else {
         const blocker = this.level?.arrows.find((a) => a.id === fx.blockerId);
         if (blocker && fx.corridor.length) {
-          g.lineWidth = Math.max(1, w * 0.55);
-          g.strokeColor = new Color(214, 74, 66, 210);
+          const alpha = Math.round(230 * (1 - Math.max(0, (p - 0.5) / 0.5)));
+          g.lineWidth = Math.max(2, w * 0.72);
+          g.strokeColor = new Color(RED.r, RED.g, RED.b, alpha);
           const a = this.cellCenter(fx.corridor[0].x, fx.corridor[0].y);
           g.moveTo(a.x, a.y);
           for (let i = 1; i < fx.corridor.length; i++) {
@@ -814,22 +845,35 @@ export class BoardView extends Component {
             fx.corridor[fx.corridor.length - 1].x,
             fx.corridor[fx.corridor.length - 1].y,
           );
-          g.fillColor = new Color(214, 74, 66, 220);
-          g.circle(end.x, end.y, Math.max(2, cell * 0.13));
+          g.fillColor = new Color(RED.r, RED.g, RED.b, alpha);
+          g.circle(end.x, end.y, Math.max(3, cell * 0.18 * (1 + p * 0.5)));
           g.fill();
         }
       }
     }
-    void w;
+
+    // Juicy clear sparkles & victory confetti
+    for (const s of this.sparks) {
+      s.t += dt;
+      if (s.t >= s.dur) continue;
+      s.vy -= s.gravity * dt;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      const k = 1 - s.t / s.dur;
+      g.fillColor = new Color(s.color.r, s.color.g, s.color.b, Math.round(255 * k));
+      g.circle(s.x, s.y, s.r * (0.45 + 0.55 * k));
+      g.fill();
+    }
+    this.sparks = this.sparks.filter((s) => s.t < s.dur);
   }
 
   private drawHeadAt(g: Graphics, head: { x: number; y: number }, d: Cell, ink: Color, scale = 1): void {
     const angle = Math.atan2(d.y, d.x);
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    const tip = this.cell * 0.4 * scale;
-    const base = -this.cell * 0.13 * scale;
-    const half = this.cell * 0.18 * scale;
+    const tip = this.cell * 0.42 * scale;
+    const base = -this.cell * 0.14 * scale;
+    const half = this.cell * 0.21 * scale;
     const map = (x: number, y: number) => ({
       x: head.x + x * cos - y * sin,
       y: head.y + x * sin + y * cos,
@@ -856,7 +900,7 @@ export class BoardView extends Component {
       this.redrawPaper();
       this.paperDirty = false;
     }
-    if (this.flying.length || this.blockFx) this.drawFlight(dt);
+    if (this.flying.length || this.blockFx || this.sparks.length) this.drawFlight(dt);
     else if (this.fx) this.fx.clear();
   }
 
@@ -876,6 +920,7 @@ export class BoardView extends Component {
     this.hintId = null;
     this.flying = [];
     this.dots = [];
+    this.sparks = [];
     this.blockFx = null;
   }
 

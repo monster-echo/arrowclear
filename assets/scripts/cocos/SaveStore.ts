@@ -1,5 +1,6 @@
 import { sys } from 'cc';
 import { fullEnergy } from '../core/energy';
+import { Lang } from './I18n';
 
 export interface SaveData {
   version: 1;
@@ -14,6 +15,8 @@ export interface SaveData {
   sound: boolean;
   haptics: boolean;
   seenHowto: boolean;
+  /** UI language — defaults to English ('en'). */
+  lang: Lang;
   /** 已通过「看广告通行证」放行的章（章号字符串 → true，规则书 §7）。 */
   chapterPasses: Record<string, boolean>;
 }
@@ -31,6 +34,7 @@ export function defaultSave(): SaveData {
     sound: true,
     haptics: true,
     seenHowto: false,
+    lang: 'en',
     chapterPasses: {},
   };
 }

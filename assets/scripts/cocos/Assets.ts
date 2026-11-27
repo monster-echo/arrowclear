@@ -1,14 +1,29 @@
-import { AudioClip, Font, resources, SpriteFrame } from 'cc';
+import { AudioClip, Font, ImageAsset, resources, SpriteFrame, Texture2D } from 'cc';
 
 function loadFrame(path: string): Promise<SpriteFrame | null> {
   return new Promise((resolve) => {
     resources.load(`${path}/spriteFrame`, SpriteFrame, (err, asset) => {
-      if (err || !asset) {
-        console.warn('[assets] missing sprite', path, err);
-        resolve(null);
+      if (!err && asset) {
+        resolve(asset);
         return;
       }
-      resolve(asset);
+      // Fallback: if imported as texture or image asset, construct a SpriteFrame directly
+      resources.load(`${path}/texture`, Texture2D, (err2, tex) => {
+        if (!err2 && tex) {
+          const sf = new SpriteFrame();
+          sf.texture = tex;
+          resolve(sf);
+          return;
+        }
+        resources.load(path, ImageAsset, (err3, img) => {
+          if (!err3 && img) {
+            resolve(SpriteFrame.createWithImage(img));
+            return;
+          }
+          console.warn('[assets] missing sprite', path, err, err2, err3);
+          resolve(null);
+        });
+      });
     });
   });
 }
@@ -73,7 +88,7 @@ export class Assets {
       'close',
       'bolt',
     ];
-    const art = ['logo', 'mascot', 'bg'];
+    const art = ['logo', 'logo-zh', 'mascot', 'bg'];
     const audio = ['pop', 'thud', 'win', 'lose', 'coin', 'click'];
 
     const tasks: Promise<void>[] = [];

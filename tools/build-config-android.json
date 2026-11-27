@@ -12,6 +12,25 @@
     }
   ],
   "startScene": "3d2b8c10-6f4a-4e59-8b71-2c9a5d0e4f86",
+  "splashScreen": {
+    "displayRatio": 0.56,
+    "totalTime": 600,
+    "watermarkLocation": "default",
+    "autoFit": true,
+    "logo": {
+      "type": "custom",
+      "image": "settings/splash_logo.png"
+    },
+    "background": {
+      "type": "color",
+      "color": {
+        "x": 0.165,
+        "y": 0.537,
+        "z": 0.957,
+        "w": 1
+      }
+    }
+  },
   "packages": {
     "android": {
       "packageName": "tech.zhongbei.arrowclear"

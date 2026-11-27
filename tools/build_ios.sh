@@ -32,7 +32,7 @@ STAGE="${STAGE:-ipa}"
 TEAM_ID="${TEAM_ID:-2VA9TC6SG4}"
 BUNDLE_ID="${BUNDLE_ID:-tech.zhongbei.arrowclear}"
 APP_NAME="${APP_NAME:-arrowclear}"
-DISPLAY_NAME="${DISPLAY_NAME:-一箭清空}"
+DISPLAY_NAME="${DISPLAY_NAME:-Arrow Clear}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-Apple Distribution: Zhenwei Ruan (2VA9TC6SG4)}"
 ASC_KEY_PATH="${ASC_KEY_PATH:-/Users/echo/workspace/keys/AuthKey_3A864HP66K.p8}"
 ASC_KEY_ID="${ASC_KEY_ID:-3A864HP66K}"
@@ -111,16 +111,31 @@ fi
 
 echo "== Cocos CLI build -> Xcode project"
 rm -rf "$BUILD_DIR"
+mkdir -p "$ROOT/.tmp"
+RESOLVED="$ROOT/.tmp/build-config-ios.json"
+python3 - "$ROOT/tools/build-config-ios.json" "$RESOLVED" "$ROOT" <<'PY'
+import json, os, sys
+src, dst, root = sys.argv[1:]
+with open(src) as f:
+    cfg = json.load(f)
+splash = cfg.get('splashScreen', {}).get('logo', {})
+if splash.get('image') and not os.path.isabs(splash['image']):
+    splash['image'] = os.path.join(root, splash['image'])
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+with open(dst, 'w') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+PY
 # Exit code 36 is Cocos' documented CLI-build success; 32 invalid parameters,
 # 34 build error. One line only: a newline inside --build silently no-ops.
 set +e
-"$CC_BIN" --project "$ROOT" --build "configPath=$ROOT/tools/build-config-ios.json"
+"$CC_BIN" --project "$ROOT" --build "configPath=$RESOLVED"
 rc=$?
 set -e
 if [[ $rc != 36 && $rc != 0 ]]; then
 	echo "Cocos CLI build failed with exit code $rc (36=ok, 32=bad params, 34=build error)" >&2
 	exit 1
 fi
+python3 "$ROOT/tools/apply_custom_splash.py"
 
 # The real app project sits directly under proj/; CMake drops throwaway
 # CompilerId*.xcodeproj probes deeper down — never pick those.
@@ -279,4 +294,3 @@ echo
 echo "IPA: $FINAL (version $VERSION build $BUILD)"
 unzip -l "$FINAL" | grep -F 'PrivacyInfo.xcprivacy' >/dev/null \
 	&& echo "privacy manifest: present"
-fi

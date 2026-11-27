@@ -2,7 +2,7 @@
  * Core rule-engine test suite (no browser, no Cocos).
  *
  * Covers: level integrity (sampled across the 500-level structure), the
- * chapter/world/mode layout, frozen-arrow rules, determinism, solvability,
+ * chapter/world/mode layout, determinism, solvability,
  * monotonicity, colouring, energy, and generation performance.
  *
  * Full 500-level sweep lives in `tools/check-levels.ts` (npm run test:levels);
@@ -11,6 +11,7 @@
  * Run: npm run test:core
  */
 import { Rng } from '../assets/scripts/core/rng';
+import { playtestLevel, simulatePlayRun } from '../assets/scripts/core/playtest';
 import {
   analyzeLevel,
   arrowsFreeAtStart,
@@ -25,19 +26,15 @@ import {
   chapterOf,
   getLevel,
   getLevelParts,
+  hasBossArrow,
   isChallenge,
   levelMode,
+  solveGreedy,
+  freeAtStartCount,
   specFor,
   stepOf,
   worldOf,
 } from '../assets/scripts/core/levels';
-import {
-  applyFreeze,
-  frozenAdjacencies,
-  freeAtStartCount,
-  isUnfrozen,
-  solveGreedyFrozen,
-} from '../assets/scripts/core/frozen';
 import { majorShapeForLevel } from '../assets/scripts/core/shapes';
 import {
   ENERGY_COST_PER_LEVEL,
@@ -183,11 +180,11 @@ console.log('\n[2] 500 shipped levels: integrity (sampled)');
     const level = getLevel(id);
     assertLevelIntegrity(level, `L${id}`, isChallenge(id));
     check(level.id === id, `L${id}: id stamped`);
-    const solved = solveGreedyFrozen(level);
-    check(solved.solved, `L${id}: greedy solve (frozen-aware) clears the board`);
+    const solved = solveGreedy(level);
+    check(solved.solved, `L${id}: greedy solve clears the board`);
     check(solved.order.length === level.arrows.length, `L${id}: solve order complete`);
 
-    // 存档解只承诺「航道合法」：冰冻只是时机约束（生成解算于冻结之前）。
+    // 存档解只承诺「航道合法」。
     // Boss 箭用 OR 逃逸语义 + 影子占位（与 solveGreedy 完全同口径）。
     let legal = true;
     const occ = new Map<number, number>();
@@ -247,42 +244,37 @@ console.log('\n[2b] 500-level structure (rules doc §2)');
   check(majorIds.size === 50, 'structure: 50 distinct major pictures', `${majorIds.size}`);
   check(majorShapeForLevel(500).id === 'throne2', 'L500 artwork is the throne');
 
-  // 冰冻箭：L41 首发恰好 2 支；L40 无冰冻；冻结箭四邻 ≥2。
-  check(getLevel(40).arrows.every((a) => !a.frozen), 'L40: no frozen arrows yet');
-  const l41 = getLevel(41);
-  check(l41.arrows.filter((a) => a.frozen).length === 2, 'L41: exactly 2 frozen arrows');
-  const adj41 = frozenAdjacencies(l41);
-  for (const a of l41.arrows) {
-    if (!a.frozen) continue;
-    check((adj41.get(a.id)?.size ?? 0) >= 2, `L41 arrow ${a.id}: frozen has >=2 neighbours`);
-  }
-  // 世界五冻结密度高于世界一/二（取同为普通盘、同 step 的两关对比）。
-  const w2frozen = getLevel(52).arrows.filter((a) => a.frozen).length;
-  const w5frozen = getLevel(452).arrows.filter((a) => a.frozen).length;
-  check(w5frozen > w2frozen, 'frozen density grows with worlds', `early=${w2frozen} W5=${w5frozen}`);
-  check(w5frozen >= 6, 'W5 frozen density is substantial', `${w5frozen}`);
+  // 大箭头（Boss 箭）不再每关都带：新手前 14 关/禅意/冲刺/图案关无大箭头，整体约 15~30%。
+  let bossCount = 0;
+  for (let id = 1; id <= LEVEL_COUNT; id++) if (hasBossArrow(id)) bossCount++;
+  check(bossCount >= 60 && bossCount <= 160, 'boss arrow appears selectively across 500 levels', `${bossCount}/500`);
+  check(getLevel(1).arrows.every((a) => !a.isBoss), 'L1: no boss arrow');
+  check(getLevel(10).arrows.every((a) => !a.isBoss), 'L10 picture: no boss arrow');
+  check(getLevel(20).arrows.every((a) => !a.isBoss), 'L20 zen: no boss arrow');
+  check(getLevel(14).arrows.every((a) => !a.isBoss), 'L14 sprint: no boss arrow');
+  check(getLevel(19).arrows.some((a) => a.isBoss), 'L19 boss debut: has boss arrow');
 
-  // Boss 三连打：世界一为单盘，世界二起 3 盘，全部可解。
+  // Boss 三连打：世界一为单盘，世界二起 3 盘（Part 1 无 Boss，Part 2/3 带 Boss），全部可解。
   const w1Boss = getLevelParts(19);
   check(w1Boss.length === 1, 'L19 (world 1) boss is a single board');
   for (const id of [119, 259, 399, 459, 499]) {
     const parts = getLevelParts(id);
     check(parts.length === 3, `L${id}: boss gauntlet has 3 parts`, `${parts.length}`);
+    check(parts[0].arrows.every((a) => !a.isBoss), `L${id} part 1: warm-up without boss arrow`);
+    check(parts[2].arrows.some((a) => a.isBoss), `L${id} part 3: climax has boss arrow`);
     parts.forEach((p, i) => {
       check(p.part === i + 1, `L${id} part ${i + 1}: stamped`);
       check(p.mode === 'boss', `L${id} part ${i + 1}: boss mode`);
-      check(solveGreedyFrozen(p).solved, `L${id} part ${i + 1}: solvable`);
+      check(solveGreedy(p).solved, `L${id} part ${i + 1}: solvable`);
       check(freeAtStartCount(p) >= 1, `L${id} part ${i + 1}: free arrow at start`);
     });
   }
 
-  // 时长纪律：世界封顶 + 冲刺减半 + 禅意无时限。
+  // 时长纪律：真图案关 180~300s，常规盘严格遵守世界 timeCap，冲刺减半，禅意无时限。
   for (const id of [30, 130, 250, 350, 460]) {
     const level = getLevel(id);
     const cap = WORLDS[worldOf(id) - 1].timeCap;
-    if (level.mask && level.mode !== 'zen') {
-      // 图案关：3~5 分钟游玩量（180~300s），不受小盘世界封顶约束；
-      // 禅意揭画关无时限，由箭量门禁保证游玩量。
+    if (level.shape && level.shape !== 'board' && level.mode !== 'zen') {
       check(
         level.timeLimit >= 180 && level.timeLimit <= 300,
         `L${id}: picture time in 3~5min band`,
@@ -291,6 +283,11 @@ console.log('\n[2b] 500-level structure (rules doc §2)');
     } else {
       check(level.timeLimit <= cap, `L${id}: time within world cap ${cap}`, `${level.timeLimit}s`);
     }
+  }
+  for (const id of [15, 115, 216, 315, 415]) {
+    const normal = getLevel(id);
+    const cap = WORLDS[worldOf(id) - 1].timeCap;
+    check(normal.timeLimit <= cap, `L${id}: normal board respects world timeCap ${cap}`, `${normal.timeLimit}s`);
   }
   for (const id of [14, 114, 214, 314, 414]) {
     const sprint = getLevel(id);
@@ -302,64 +299,10 @@ console.log('\n[2b] 500-level structure (rules doc §2)');
   }
 
   // specFor 稳定性与结构字段。
-  const s1 = specFor(41);
-  check(s1.mode === 'normal' && s1.freezeDensity > 0, 'specFor(41): frozen first appearance');
+  const s1 = specFor(21);
+  check(s1.mode === 'normal', 'specFor(21): normal pacing');
   check(specFor(21).cols <= specFor(39).cols, 'board grows inside a chapter');
   check(specFor(200).cols > specFor(100).cols, 'world size steps up across worlds');
-}
-
-console.log('\n[2c] Frozen-arrow rules (rules doc §4)');
-{
-  // 手工小盘：B 被右侧竖箭 C 挡住航道，四邻恰 2（A、D）→ 唯一可冻结。
-  //   A═▸ ·  ·  C 头(3,1) 尾(3,0) 朝下
-  //   B═▸ ·  C
-  //   D═▸ ·  ·
-  const mini: Level = {
-    id: 1,
-    cols: 4,
-    rows: 3,
-    arrows: [
-      { id: 0, color: 0, cells: [{ x: 1, y: 0 }, { x: 0, y: 0 }], dir: 1 },
-      { id: 1, color: 1, cells: [{ x: 1, y: 1 }, { x: 0, y: 1 }], dir: 1 },
-      { id: 2, color: 2, cells: [{ x: 3, y: 1 }, { x: 3, y: 0 }], dir: 2 },
-      { id: 3, color: 3, cells: [{ x: 1, y: 2 }, { x: 0, y: 2 }], dir: 1 },
-    ],
-    timeLimit: 60,
-    seed: 1,
-    solution: [2, 0, 3, 1],
-  };
-  const adj = frozenAdjacencies(mini);
-  check(adj.get(0)!.size === 1, 'frozenAdjacencies: top arrow has 1 neighbour');
-  check(adj.get(1)!.size === 2, 'frozenAdjacencies: middle arrow has 2 neighbours');
-  check(isUnfrozen(1, new Set([0]), adj) === false, 'isUnfrozen: 1 neighbour is not enough');
-  check(isUnfrozen(1, new Set([0, 3]), adj) === true, 'isUnfrozen: 2 distinct neighbours unfreeze');
-  check(isUnfrozen(1, new Set([0, 0, 3, 3]), adj) === true, 'isUnfrozen: counting is distinct-based');
-
-  // applyFreeze：只冻结「被挡 + 四邻≥2」的箭；冻结后整盘仍可解。
-  const applied = applyFreeze(mini, 3, new Rng(1));
-  check(applied === 1, 'applyFreeze: only the middle arrow qualifies');
-  check(mini.arrows[1].frozen === true, 'applyFreeze: middle arrow frozen');
-  const solved = solveGreedyFrozen(mini);
-  check(solved.solved, 'applyFreeze: mini board still solvable (unfreeze by removals)');
-
-  // 修复回路：对真实关卡按 10% 密度冻结（贴近生产路径的量级），必须可解且保住冻结。
-  const heavy = structuredClone(getLevel(45));
-  heavy.arrows.forEach((a) => (a.frozen = false)); // 从零开始计数
-  const wantHeavy = Math.max(6, Math.ceil(heavy.arrows.length * 0.1));
-  const appliedHeavy = applyFreeze(heavy, wantHeavy, new Rng(7));
-  check(appliedHeavy > 3, 'applyFreeze(heavy): many arrows frozen', `${appliedHeavy}/${wantHeavy}`);
-  check(solveGreedyFrozen(heavy).solved, 'applyFreeze(heavy): repair loop keeps board solvable');
-  check(
-    heavy.arrows.filter((a) => a.frozen).length === appliedHeavy,
-    'applyFreeze(heavy): counter matches',
-  );
-
-  // 开局自由箭永不冻结：冻结前后自由集一致。
-  const l45 = getLevel(46);
-  check(
-    arrowsFreeAtStart(l45) === freeAtStartCount(l45),
-    'applyFreeze: free-at-start arrows are never frozen',
-  );
 }
 
 console.log('\n[3] Determinism');
@@ -378,10 +321,8 @@ console.log('\n[4] Monotonicity (random legal orders)');
   const rng = new Rng(2024);
   for (const id of [1, 12, 27, 44, 60, 150, 451]) {
     const level = getLevel(id);
-    const adj = frozenAdjacencies(level);
     for (let round = 0; round < 8; round++) {
       const alive = new Set(level.arrows.map((a) => a.id));
-      const removed = new Set<number>();
       const owner = new Map<number, number>();
       for (const a of level.arrows) {
         for (const c of a.cells) owner.set(cellKey(c), a.id);
@@ -392,7 +333,6 @@ console.log('\n[4] Monotonicity (random legal orders)');
         const free = level.arrows.filter(
           (a) =>
             alive.has(a.id) &&
-            (!a.frozen || isUnfrozen(a.id, removed, adj)) &&
             canArrowEscape(level, a, (c) => {
               const o = owner.get(cellKey(c));
               return o !== undefined && o !== a.id && alive.has(o);
@@ -401,7 +341,6 @@ console.log('\n[4] Monotonicity (random legal orders)');
         if (!free.length) break;
         const pick = free[rng.int(free.length)];
         alive.delete(pick.id);
-        removed.add(pick.id);
         steps++;
       }
       check(alive.size === 0, `L${id} random order #${round} clears the board`);
@@ -571,6 +510,28 @@ console.log('\n[7] Energy / 体力');
   check(ENERGY_MAX === 5 && MIN === 360_000, 'constants: 5 点体力 / 6 分钟周期');
 }
 
+console.log('\n[7b] Playtest & Time Calibration');
+{
+  for (const id of [1, 2, 14, 19, 21, 250, 452]) {
+    const lv = getLevel(id);
+    const fast = simulatePlayRun(lv, 'fast', 123);
+    const careful = simulatePlayRun(lv, 'careful', 123);
+    check(fast.clearTimeSec > 0 && careful.clearTimeSec >= fast.clearTimeSec, `L${id}: playtest tier ordering`);
+    const rep = playtestLevel(lv);
+    check(rep.score >= 55 && rep.score <= 100, `L${id}: playtest score valid`, `${rep.score}`);
+    if (lv.mode === 'zen') {
+      check(rep.recommendedTime === 0, `L${id}: zen recommendedTime is 0`);
+    } else {
+      check(
+        lv.timeLimit >= rep.clearTimeMedian && rep.recommendedTime >= rep.clearTimeMedian,
+        `L${id}: calibrated time >= T50`,
+        `limit=${lv.timeLimit}s rec=${rep.recommendedTime}s T50=${rep.clearTimeMedian}s`,
+      );
+      check(rep.recommendedTime % 5 === 0, `L${id}: recommendedTime multiple of 5`, `${rep.recommendedTime}s`);
+    }
+  }
+}
+
 console.log('\n[8] Stats');
 {
   const rows: string[] = [];
@@ -578,7 +539,7 @@ console.log('\n[8] Stats');
     const l = getLevel(id);
     const s = analyzeLevel(l);
     rows.push(
-      `  L${String(id).padStart(3)}  ${l.cols}x${l.rows}  ${String(l.shape ?? 'board').padEnd(9)} ${String(l.mode ?? 'normal').padEnd(6)} arrows=${s.arrows}  fill=${(s.fillRatio * 100).toFixed(0)}%  free=${s.freeAtStart}  frozen=${l.arrows.filter((a) => a.frozen).length}  time=${l.timeLimit}s`,
+      `  L${String(id).padStart(3)}  ${l.cols}x${l.rows}  ${String(l.shape ?? 'board').padEnd(9)} ${String(l.mode ?? 'normal').padEnd(6)} arrows=${s.arrows}  fill=${(s.fillRatio * 100).toFixed(0)}%  free=${s.freeAtStart}  time=${l.timeLimit}s`,
     );
   }
   console.log(rows.join('\n'));

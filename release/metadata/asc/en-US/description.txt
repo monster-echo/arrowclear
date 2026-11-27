@@ -1,0 +1,25 @@
+Arrow Clear is a relaxing one-tap puzzle about untangling a board full of long, colorful snakes of arrows.
+
+Every arrow flies straight in its own direction. Tap one and it launches off the board — unless another arrow is in the way, and then it bumps. Clear every arrow to win the level. Fewer bumps, more stars.
+
+HOW TO PLAY
+· Study each arrow's direction and what blocks its path
+· Free the blocking arrows first, then peel the board layer by layer
+· Clear the whole board to finish the level
+· The fewer wall bumps, the more stars you earn
+
+FEATURES
+· 500 handcrafted levels across 5 worlds and 25 chapters
+· Puzzle-piece boards: clearing a level reveals a hidden picture
+· Giant boss arrows that need a two-lane-wide corridor to escape
+· Sprint stages, boss rushes and a calm no-fail finale for every chapter
+· Bonus challenge: one extra-tricky board, open anytime
+· Smart hints that light up an arrow free to fly right now
+
+RELAXED PROGRESSION
+· 3 hearts per stage — mistakes cost a heart, never your progress
+· Energy refills over time, even offline
+· Extra hints, energy and a second chance are there when you need them, free of charge
+· Every level is guaranteed solvable — no dead ends, ever
+
+No in-app purchases. No coins. Just arrows, logic and a satisfying whoosh as the board empties.

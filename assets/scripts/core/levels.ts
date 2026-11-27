@@ -1,9 +1,8 @@
-import { generateLevel, GenOptions, solveGreedy } from './levelgen';
+import { freeAtStartCount, generateLevel, GenOptions, solveGreedy } from './levelgen';
 import { generateMasterLevel, MasterSpec } from './arrowscore';
 import { ACORN_COLS, ACORN_ROWS, acornMask } from './acorn';
 import { scoreLevel } from './scoring';
 import { getChallengeLevel, CHALLENGE_ID } from './challenge';
-import { applyFreeze, solveGreedyFrozen } from './frozen';
 import {
   compileShapeScaled,
   festivalForDate,
@@ -12,15 +11,13 @@ import {
   proceduralBoardMask,
   ShapeMask,
 } from './shapes';
-import { Rng } from './rng';
+import { BOSS_PART_TIME_OVERRIDES, LEVEL_TIME_OVERRIDES } from './levelTimes';
 import { Level, LevelMode } from './types';
 
 export interface LevelSpec extends Omit<GenOptions, 'seed'> {
   seed: number;
   /** Pacing variant for this level. */
   mode: LevelMode;
-  /** Fraction of arrows to freeze (0 = no frozen arrows). */
-  freezeDensity: number;
   /** True when the level is one part of a 3-part boss gauntlet. */
   bossPart?: boolean;
 }
@@ -41,16 +38,14 @@ export interface WorldSpec {
   timeCap: number;
   /** Boss 小关的 timeLimit 上限（秒）。 */
   bossTimeCap: number;
-  /** 平均冰冻密度（开局自由箭与禅意关不冻结）。 */
-  freezeDensity: number;
 }
 
 export const WORLDS: WorldSpec[] = [
-  { name: 'Sunny Meadow', timeCap: 180, bossTimeCap: 150, freezeDensity: 0.07 },
-  { name: 'Frozen Castle', timeCap: 210, bossTimeCap: 180, freezeDensity: 0.15 },
-  { name: 'Art Gallery', timeCap: 210, bossTimeCap: 180, freezeDensity: 0.18 },
-  { name: 'World Tour', timeCap: 240, bossTimeCap: 240, freezeDensity: 0.22 },
-  { name: 'Royal Throne', timeCap: 300, bossTimeCap: 300, freezeDensity: 0.28 },
+  { name: 'Sunny Meadow', timeCap: 180, bossTimeCap: 150 },
+  { name: 'Frozen Castle', timeCap: 195, bossTimeCap: 165 },
+  { name: 'Art Gallery', timeCap: 210, bossTimeCap: 180 },
+  { name: 'World Tour', timeCap: 225, bossTimeCap: 200 },
+  { name: 'Royal Throne', timeCap: 240, bossTimeCap: 220 },
 ];
 
 export function chapterOf(id: number): number {
@@ -213,22 +208,36 @@ const CHAPTER_BOARDS: [number, number][][] = [
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 /**
- * 漏斗手术目标（按世界）：v3 尺度固定（40~65 / 20~36 / 8~16 / 4~9 / 3~6），
- * 难度爬坡由盘面尺寸 + 开局可动数收敛控制。
+ * 漏斗手术目标 + 锁数量 + 蛇尺缩放（按世界与关位动态爬坡）。
+ * 章首 2 关（step 0, 1）放宽入口营造爽感；主力爬坡与精英/Boss 压紧至单线突破口。
  */
-function masterParamsFor(world: number): Pick<MasterSpec, 'targetMovable'> {
-  switch (world) {
-    case 1:
-      return { targetMovable: 3 };
-    case 2:
-      return { targetMovable: 2 };
-    case 3:
-      return { targetMovable: 2 };
-    case 4:
-      return { targetMovable: 1 };
-    default:
-      return { targetMovable: 1 };
-  }
+function masterParamsFor(
+  id: number,
+  world: number,
+): Pick<MasterSpec, 'targetMovable' | 'lockCount' | 'giantScale' | 'midScale'> {
+  const step = stepOf(id);
+  const opener = step <= 1;
+  const targetMovable = opener
+    ? world <= 2
+      ? 4
+      : world <= 4
+        ? 3
+        : 2
+    : world <= 2
+      ? 2
+      : 1;
+
+  let lockCount = 3;
+  if (world === 1) lockCount = id <= 10 ? 2 : 3;
+  else if (world === 2) lockCount = step < 10 ? 3 : 4;
+  else if (world === 3) lockCount = step < 10 ? 4 : 5;
+  else if (world === 4) lockCount = step < 10 ? 5 : 6;
+  else lockCount = step < 10 ? 6 : 8;
+
+  const giantScale: [number, number] = world === 1 ? [26, 42] : world === 2 ? [32, 52] : [40, 65];
+  const midScale: [number, number] = world === 1 ? [14, 24] : world === 2 ? [18, 30] : [20, 36];
+
+  return { targetMovable, lockCount, giantScale, midScale };
 }
 
 /** 世界三的图案占比 ≥50%：偶数步（0,2,4,8,10,12,14,16,17）也走剪影。 */
@@ -240,24 +249,32 @@ function wantsPictureBoard(id: number): boolean {
   return step % 2 === 0 || step === 17;
 }
 
-function freezeDensityFor(id: number): number {
-  // 冰冻箭 L41 首发（规则书 §4）：教学关恰好 2 支（finishLevel 定死数量）。
-  if (id === 41) return 0.02;
-  if (isZen(id)) return 0;
-  const step = stepOf(id);
-  if (step <= 1) return 0; // 章首爽关不冻结
-  const world = worldOf(id);
-  if (world === 1) {
-    // 冰冻箭 L41 首发（规则书 §4）：首关固定 2 支，密度缓慢上升。
-    if (id < 41) return 0;
-    if (id <= 60) return 0.05;
-    if (id <= 80) return 0.07;
-    return 0.09;
+/**
+ * 大箭头（Boss 箭）不再每关都带：
+ * - L1~L14 不出现，让新手先把经典蛇形清盘玩透；
+ * - L19（第 1 章 Boss）惊喜首秀；
+ * - 禅意关 / 冲刺关 / 图案剪影关 / 章首爽关一律不带大箭头，保持视觉纯净；
+ * - 常规爬坡仅在章内精英位（随世界 10%~30% 提升）与 Boss 关（L19）登场。
+ */
+export function hasBossArrow(id: number): boolean {
+  const clamped = Math.max(1, Math.min(LEVEL_COUNT, Math.floor(id)));
+  if (clamped < 15) return false;
+  if (isZen(clamped) || isSprint(clamped) || wantsPictureBoard(clamped)) return false;
+  const step = stepOf(clamped);
+  if (step <= 1) return false;
+  if (isBoss(clamped)) return true;
+  const world = worldOf(clamped);
+  switch (world) {
+    case 1:
+      return step === 15;
+    case 2:
+    case 3:
+      return step === 11 || step === 15;
+    case 4:
+      return step === 8 || step === 12 || step === 15 || step === 17;
+    default:
+      return step === 5 || step === 8 || step === 11 || step === 15 || step === 17;
   }
-  const base = WORLDS[world - 1].freezeDensity;
-  // 章内微爬坡：章首 0.85×，章尾 1.1×。
-  const t = step / (CHAPTER_SIZE - 1);
-  return base * lerp(0.85, 1.1, t);
 }
 
 /** 图案面积目标：1250~2400 格 ≈ 90~180 支箭 ≈ 3~5 分钟游玩量。 */
@@ -345,7 +362,6 @@ export function specFor(id: number): LevelSpec {
     mask,
     shape: pic ? shape : 'board',
     mode: levelMode(clamped),
-    freezeDensity: freezeDensityFor(clamped),
     bossPart: isBoss(clamped) && world >= 2,
   };
   if (clamped === 1) {
@@ -369,35 +385,29 @@ function finishLevel(level: Level, spec: LevelSpec, chapter: number, step: numbe
   level.chapter = chapter;
   level.step = step;
 
-  // 冰冻（规则书 §4）：撒在「被挡且四邻≥2箭」的箭上，不碰开局自由箭。
-  if (spec.freezeDensity > 0 && level.arrows.length > 12) {
-    const rng = new Rng(spec.seed ^ 0x5eed);
-    let count = Math.round(level.arrows.length * spec.freezeDensity);
-    if (spec.id === 41) count = 2; // 首发教学关：恰好 2 支
-    applyFreeze(level, count, rng);
-  }
-
-  // 时长（规则书 §2）：T80 + 30s，按世界封顶；冲刺减半；禅意无时限。
+  // 时长校准：区分真图案关（3~5 分钟休闲节奏）与常规盘（随世界收紧缓冲，体现难度）。
   const world = worldOf(spec.id);
   const cap = WORLDS[world - 1].timeCap;
+  const isPicture = !!spec.shape && spec.shape !== 'board';
+  const buffer = Math.round(lerp(24, 10, (world - 1) / 4));
   const report = scoreLevel(level);
   if (spec.mode === 'zen') {
     level.timeLimit = 0;
+  } else if (LEVEL_TIME_OVERRIDES[spec.id] !== undefined) {
+    level.timeLimit = LEVEL_TIME_OVERRIDES[spec.id];
   } else if (spec.mode === 'sprint') {
-    const full = Math.min(cap, Math.max(45, report.estimatedT80 + 30));
+    const full = Math.min(cap, Math.max(45, report.estimatedT80 + buffer));
     level.timeLimit = Math.max(45, Math.round(full / 2 / 5) * 5);
-  } else if (spec.mask) {
-    // 图案关：3~5 分钟游玩量（180~300s），不受小盘世界封顶约束。
-    level.timeLimit = Math.min(300, Math.max(180, Math.round((report.estimatedT80 + 30) / 5) * 5));
+  } else if (isPicture) {
+    level.timeLimit = Math.min(300, Math.max(180, Math.round((report.estimatedT80 + 20) / 5) * 5));
   } else {
-    level.timeLimit = Math.min(cap, Math.max(30, Math.round((report.estimatedT80 + 30) / 5) * 5));
+    level.timeLimit = Math.min(cap, Math.max(35, Math.round((report.estimatedT80 + buffer) / 5) * 5));
   }
   return level;
 }
 
 /**
- * 质量门禁：按五维评分重摇，直到达标。
- * 低分关不允许出现在正式关卡表里（最多 6 次尝试，取首个达标；全不达标取最佳）。
+ * 质量门禁：按四维评分 + 开局漏斗宽度重摇，直到达标。
  */
 const GATE_ATTEMPTS = 16;
 const GATE_SEED_STEP = 104729;
@@ -408,10 +418,10 @@ function buildGated(
   rows: number,
   seed: number,
   mask: Uint8Array | undefined,
-  params: Pick<MasterSpec, 'targetMovable'>,
+  isPicture: boolean,
+  params: Pick<MasterSpec, 'targetMovable' | 'lockCount' | 'giantScale' | 'midScale'>,
   withBoss: boolean,
 ): Level | null {
-  // 达标 = 评分过线 && 开局可动 ≤ 目标+1（单线漏斗是本算法招牌，必须卡住）。
   const targetMovable = params.targetMovable ?? 1;
   let best: Level | null = null;
   let bestRank = -Infinity;
@@ -426,16 +436,15 @@ function buildGated(
       ...params,
     });
     if (!lv) continue;
-    // 综合排名：评分为主，可动超标重罚。
     const rank =
       lv.report.totalScore -
-      Math.max(0, lv.report.initialMovable - (targetMovable + 1)) * 8 -
-      (mask && (lv.report.arrows < 85 || lv.report.arrows > 130) ? 20 : 0);
+      Math.max(0, lv.report.initialMovable - (targetMovable + 1)) * 10 -
+      (isPicture && (lv.report.arrows < 85 || lv.report.arrows > 130) ? 20 : 0);
     if (rank > bestRank) {
       best = lv;
       bestRank = rank;
     }
-    const arrowsOk = !mask || (lv.report.arrows >= 85 && lv.report.arrows <= 130);
+    const arrowsOk = !isPicture || (lv.report.arrows >= 85 && lv.report.arrows <= 130);
     if (lv.report.passes && lv.report.initialMovable <= targetMovable + 1 && arrowsOk) return lv;
   }
   return best;
@@ -445,17 +454,18 @@ function buildLevel(spec: LevelSpec): Level | null {
   const chapter = chapterOf(spec.id);
   const step = stepOf(spec.id);
   const world = worldOf(spec.id);
+  const isPicture = !!spec.shape && spec.shape !== 'board';
 
-  // 唯一主力算法：四阶段多尺度巨蟒包络（用户新算法移植）。
-  // Boss 变化：教学关与每章中段（step 10）无 Boss，打破千篇一律。
+  // 主力算法：四阶段多尺度巨蟒包络 + 多锁群落 + 单线漏斗手术。
   const master = buildGated(
     spec.id,
     spec.cols,
     spec.rows,
     spec.seed,
     spec.mask,
-    masterParamsFor(world),
-    spec.id !== 1 && stepOf(spec.id) !== 10,
+    isPicture,
+    masterParamsFor(spec.id, world),
+    hasBossArrow(spec.id),
   );
   if (master) return finishLevel(master, spec, chapter, step);
 
@@ -492,7 +502,7 @@ export function getLevel(id: number): Level {
 
 /**
  * 一个关卡可能由多张盘组成（世界二起的 Boss 三连打，规则书 §5）：
- * 返回按顺序要清空的盘面列表；常规关长度为 1。
+ * Part 1 预热多锁盘（无 Boss）→ Part 2 Boss 登场 → Part 3 终极单线 Boss。
  */
 export function getLevelParts(id: number): Level[] {
   const clamped = Math.max(1, Math.floor(id));
@@ -505,28 +515,36 @@ export function getLevelParts(id: number): Level[] {
   const cap = WORLDS[world - 1].bossTimeCap;
   for (let part = 1; part <= 3; part++) {
     const t = (part - 1) / 2;
-    // 部件盘面下限 13×20：保证 25+ 支箭，箭量分才够得到达标线。
     const cols = Math.round(lerp(13, 16, (world - 2) / 3 + t * 0.15));
     const rows = Math.round(lerp(20, 25, (world - 2) / 3 + t * 0.15));
-    // Boss 三连打也用新算法（四阶段巨蟒包络）：小盘 + 漏斗逐段收紧；
-    // 同样过质量门禁，低分部件自动换种子重摇。
     const gated = buildGated(
       clamped,
       cols,
       rows,
       spec.seed + part * 7919,
       undefined,
-      { targetMovable: part === 1 ? 3 : part === 2 ? 2 : 1 },
-      true,
+      false,
+      {
+        targetMovable: part === 1 ? 2 : part === 2 ? 2 : 1,
+        lockCount: part === 3 ? 3 : 2,
+        giantScale: [18, 28],
+        midScale: [10, 18],
+      },
+      part >= 2,
     );
-    const built = gated ?? getLevel(clamped); // 终极兜底：退化为常规盘
+    const built = gated ?? getLevel(clamped);
     built.id = clamped;
     built.part = part;
     built.mode = 'boss';
     built.chapter = chapterOf(clamped);
     built.step = stepOf(clamped);
-    const report = scoreLevel(built);
-    built.timeLimit = Math.min(cap, Math.max(45, Math.round((report.estimatedT80 + 20) / 5) * 5));
+    const bossKey = `${clamped}:${part}`;
+    if (BOSS_PART_TIME_OVERRIDES[bossKey] !== undefined) {
+      built.timeLimit = BOSS_PART_TIME_OVERRIDES[bossKey];
+    } else {
+      const report = scoreLevel(built);
+      built.timeLimit = Math.min(cap, Math.max(45, Math.round((report.estimatedT80 + 16) / 5) * 5));
+    }
     parts.push(built);
   }
   bossCache.set(clamped, parts);
@@ -548,4 +566,4 @@ export function worldName(id: number): string {
   return WORLDS[worldOf(id) - 1].name;
 }
 
-export { solveGreedy, solveGreedyFrozen };
+export { solveGreedy, freeAtStartCount };

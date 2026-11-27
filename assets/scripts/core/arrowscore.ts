@@ -50,6 +50,11 @@ export interface MasterSpec {
   targetMovable?: number;
   /** 是否放置 Boss 箭（默认 true）。 */
   withBoss?: boolean;
+  /** 棋盘内放置的结构化连环锁数量（螺旋锁/门闩锁/双钩锁/嵌套锁）。 */
+  lockCount?: number;
+  /** 巨蟒与次级巨蟒长度区间缩放（默认 [40,65] / [20,36]）。 */
+  giantScale?: [number, number];
+  midScale?: [number, number];
   timeLimit?: number;
 }
 
@@ -689,13 +694,13 @@ class Master {
   /** 统一残余空格吸收器（尾接 → 头延 → 双格配对 → 借尾），6 pass。 */
   private fillResidual(): void {
     for (let pass = 0; pass < 6; pass++) {
-      const allowOutward = pass >= 3;
+      const allowOutward = pass >= 4;
       for (let y = 0; y < this.h; y++) {
         for (let x = 0; x < this.w; x++) {
           if (!this.inMask(x, y) || this.occ[x][y] !== null) continue;
           let done = false;
 
-          // (a) 并入邻居箭尾或延伸邻居箭尖。
+          // (a) 并入邻居箭尾或延伸邻居箭尖（优先选仍被阻挡的方向，避免凭空增加开局可飞箭）。
           for (const d of DIR_VECS) {
             const nx = x + d.x;
             const ny = y + d.y;
@@ -720,7 +725,11 @@ class Master {
               arr.cells.push({ x, y });
               arr.dir = newDir;
               this.occ[x][y] = arr.id;
-              if (this.selfValid(arr.cells, arr.dir) && this.solvable()) {
+              if (
+                this.selfValid(arr.cells, arr.dir) &&
+                (!this.escapeInfo(arr).canEscape || allowOutward) &&
+                this.solvable()
+              ) {
                 done = true;
                 break;
               }
@@ -731,7 +740,7 @@ class Master {
           }
           if (done) continue;
 
-          // (b) 相邻双空格配对，或向长箭借 1 格箭尾（后期允许外向）。
+          // (b) 相邻双空格配对，或向长箭借 1 格箭尾（优先被挡方向，减少漏斗漏箭）。
           for (const d of DIR_VECS) {
             const nx = x + d.x;
             const ny = y + d.y;
@@ -741,10 +750,18 @@ class Master {
                 [{ x, y }, { x: nx, y: ny }],
                 [{ x: nx, y: ny }, { x, y }],
               ] as Cell[][];
+              const blockedSeqs: { seq: Cell[]; dir: Vec }[] = [];
+              const freeSeqs: { seq: Cell[]; dir: Vec }[] = [];
               for (const seq of pair) {
                 const dir = { x: seq[1].x - seq[0].x, y: seq[1].y - seq[0].y };
                 if (this.pointsDirectlyOut(seq, dir) && !allowOutward) continue;
-                if (this.commitArrow(seq, dir, false)) {
+                const probe: WorkArrow = { id: this.nextId, cells: seq, dir, isBoss: false, layerDepth: 0 };
+                if (this.escapeInfo(probe).canEscape) freeSeqs.push({ seq, dir });
+                else blockedSeqs.push({ seq, dir });
+              }
+              for (const c of [...blockedSeqs, ...freeSeqs]) {
+                if (!allowOutward && freeSeqs.includes(c)) continue;
+                if (this.commitArrow(c.seq, c.dir, false)) {
                   done = true;
                   break;
                 }
@@ -844,15 +861,15 @@ class Master {
 
   /**
    * 单线漏斗手术（压制开局可动数到目标值）。
-   * v3 参考为 3 pass 尽力而为；工程适配：仍有进展就继续（≤12），
-   * 直到压到目标——「开局单线突破口」是本算法的招牌体验。
+   * 工程适配：4 种手术（调头 / 借尾拐头 / 并入受阻长箭 / 借尾延伸），
+   * 仍有进展就继续（≤14），稳定压到目标「单线突破口」。
    */
   funnelSurgery(target: number): void {
     let lastMovable = Infinity;
-    for (let pass = 0; pass < 12; pass++) {
+    for (let pass = 0; pass < 14; pass++) {
       const movable = this.list.filter((a) => !a.isBoss && this.escapeInfo(a).canEscape);
       if (movable.length <= target) break;
-      if (movable.length >= lastMovable && pass >= 6) break; // 无进展即停（多给 3 轮机会）
+      if (movable.length >= lastMovable && pass >= 6) break;
       lastMovable = movable.length;
 
       for (const arr of movable) {
@@ -878,7 +895,7 @@ class Master {
           this.stampIn(arr);
         }
 
-        // 手术 2：借邻居 1 格箭尾拐头。
+        // 手术 2：借邻居 1 格箭尾拐头（允许借出后邻居 ≥2 格）。
         const head = arr.cells[arr.cells.length - 1];
         let fixed = false;
         for (const d of DIR_VECS) {
@@ -886,7 +903,7 @@ class Master {
           const ny = head.y + d.y;
           if (!this.inMask(nx, ny) || this.occ[nx][ny] === null) continue;
           const nb = this.idToArrow.get(this.occ[nx][ny]!);
-          if (!nb || nb.id === arr.id || nb.isBoss || nb.cells.length <= 3) continue;
+          if (!nb || nb.id === arr.id || nb.isBoss || nb.cells.length < 3) continue;
           if (nb.cells[0].x === nx && nb.cells[0].y === ny) {
             const borrowed = nb.cells.shift()!;
             const oldDir = arr.dir;
@@ -911,8 +928,8 @@ class Master {
         }
         if (fixed) continue;
 
-        // 手术 3：短箭并入相邻受阻长箭尾部。
-        if (arr.cells.length <= 4) {
+        // 手术 3：自由箭（≤8 格）并入相邻受阻长箭尾部，既消自由箭又造长蛇。
+        if (arr.cells.length <= 8) {
           for (const seq of [arr.cells, [...arr.cells].reverse()]) {
             const endPt = seq[seq.length - 1];
             let merged = false;
@@ -944,23 +961,92 @@ class Master {
             }
           }
         }
+        if (fixed) continue;
       }
     }
   }
 
-  /** 阶段 1：Boss + 6 桥 + G 螺旋（锚点按 22×34 比例缩放，形状逐格保持）。 */
-  private placeFixedStructures(withBoss: boolean): void {
+  /**
+   * 原子放置一个多箭连环锁模组（任一箭越界/重叠/不可解则整组回滚）。
+   * 返回成功放置时新增的箭数（0 表示失败）。
+   */
+  private tryCommitLockCluster(
+    ax: number,
+    ay: number,
+    bw: number,
+    bh: number,
+    rot: number,
+    flip: boolean,
+    groups: readonly (readonly [number, number][])[],
+  ): number {
+    const transform = (lx: number, ly: number): Cell => {
+      const fx = flip ? bw - 1 - lx : lx;
+      switch (rot & 3) {
+        case 1:
+          return { x: ax + (bh - 1 - ly), y: ay + fx };
+        case 2:
+          return { x: ax + (bw - 1 - fx), y: ay + (bh - 1 - ly) };
+        case 3:
+          return { x: ax + ly, y: ay + (bw - 1 - fx) };
+        default:
+          return { x: ax + fx, y: ay + ly };
+      }
+    };
+
+    const built: WorkArrow[] = [];
+    const usedKeys = new Set<number>();
+    for (const grp of groups) {
+      if (grp.length < 2) return 0;
+      const pts = grp.map(([lx, ly]) => transform(lx, ly));
+      for (const p of pts) {
+        const k = p.y * 4096 + p.x;
+        if (!this.inMask(p.x, p.y) || this.occ[p.x][p.y] !== null || usedKeys.has(k)) return 0;
+        usedKeys.add(k);
+      }
+      const head = pts[pts.length - 1];
+      const prev = pts[pts.length - 2];
+      const dir = { x: head.x - prev.x, y: head.y - prev.y };
+      if (!this.selfValid(pts, dir)) return 0;
+      built.push({ id: this.nextId + built.length, cells: pts, dir, isBoss: false, layerDepth: 0 });
+    }
+
+    // 优先保证模组的「最外层解锁入口」朝向棋盘内侧，方便后续长蛇把它包入深层依赖链。
+    const pin = built[built.length - 1];
+    if (this.pointsDirectlyOut(pin.cells, pin.dir)) return 0;
+
+    for (const a of built) this.list.push(a);
+    if (!this.solvable()) {
+      for (let i = 0; i < built.length; i++) this.list.pop();
+      return 0;
+    }
+    for (const a of built) {
+      this.idToArrow.set(a.id, a);
+      for (const p of a.cells) this.occ[p.x][p.y] = a.id;
+    }
+    this.nextId += built.length;
+    return built.length;
+  }
+
+  /** 阶段 1：可选 Boss + 6 护城河桥 + 多组互锁结构（螺旋锁/门闩锁/双钩锁/嵌套锁）。 */
+  private placeFixedStructures(withBoss: boolean, lockCount: number): void {
     const fx = (r: number): number => Math.max(1, Math.min(this.w - 2, Math.round(r * this.w)));
     const fy = (r: number): number => Math.max(1, Math.min(this.h - 2, Math.round(r * this.h)));
 
     if (withBoss) {
-      const bx = Math.round(this.w * 0.41) + this.rng.int(3);
-      const by = Math.round(this.h * 0.44) + this.rng.int(3);
-      const bossCells: Cell[] = Array.from({ length: 6 }, (_, i) => ({ x: bx, y: by + i }));
-      this.tryCommitFixed(bossCells, true);
+      const bossLen = this.h <= 25 ? 5 : 6;
+      const pointUp = this.rng.next() < 0.5;
+      for (let tryBoss = 0; tryBoss < 6; tryBoss++) {
+        const bx = Math.max(2, Math.min(this.w - 4, Math.round(this.w * (0.34 + this.rng.next() * 0.24))));
+        const by = Math.max(2, Math.min(this.h - bossLen - 2, Math.round(this.h * (0.28 + this.rng.next() * 0.26))));
+        const bossCells: Cell[] = Array.from({ length: bossLen }, (_, i) => ({
+          x: bx,
+          y: pointUp ? by + (bossLen - 1 - i) : by + i,
+        }));
+        if (this.tryCommitFixed(bossCells, true)) break;
+      }
     }
 
-    // 6 座护城河桥（与参考同构：上 2 / 左右各 1 / 下 2，尾贴边、尖内拐）。
+    // 6 座护城河桥（上 2 / 左右各 1 / 下 2，尾贴边、尖内拐）。
     const b = (x0: number, x1: number, yEdge: number, inward: number): Cell[] => {
       const cells: Cell[] = [];
       const step = x1 >= x0 ? 1 : -1;
@@ -982,24 +1068,100 @@ class Master {
     this.tryCommitFixed(b(fx(0.14), fx(0.36), this.h - 1, -1));
     this.tryCommitFixed(b(fx(0.86), fx(0.64), this.h - 1, -1));
 
-    // 1 座 19 格 G 螺旋 + 3 格内锁（形状逐格保持参考版本）。
-    const sx = Math.round(this.w * 0.5);
-    const sy = Math.round(this.h * 0.18);
-    const g: Cell[] = [];
-    const push = (dx: number, dy: number): void => {
-      g.push({ x: sx + dx, y: sy + dy });
-    };
-    push(0, 6); push(1, 6); push(2, 6); push(3, 6);
-    push(3, 5); push(3, 4); push(3, 3); push(3, 2); push(3, 1); push(3, 0);
-    push(2, 0); push(1, 0); push(0, 0);
-    push(0, 1); push(0, 2); push(0, 3); push(0, 4);
-    push(1, 4); push(2, 4);
-    if (this.tryCommitFixed(g)) {
-      this.tryCommitFixed([
-        { x: sx + 1, y: sy + 3 },
-        { x: sx + 1, y: sy + 2 },
-        { x: sx + 1, y: sy + 1 },
-      ]);
+    // 4 种经过拓扑验证的满铺互锁模组（每组内部全无空格、多段连锁解锁，最后一支为外口门闩）。
+    const LOCK_MOTIFS: { bw: number; bh: number; groups: [number, number][][] }[] = [
+      // (0) 螺旋核心锁（5×5）：外门闩 → 14 格螺旋 → 3 格内芯 A → 3 格内芯 B
+      {
+        bw: 5,
+        bh: 5,
+        groups: [
+          [[2, 2], [2, 3], [1, 3], [0, 3], [0, 2], [0, 1], [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [4, 1], [4, 2], [4, 3]],
+          [[3, 3], [3, 2], [3, 1]],
+          [[1, 2], [1, 1], [2, 1]],
+          [[0, 4], [1, 4], [2, 4], [3, 4], [4, 4]],
+        ],
+      },
+      // (1) 门闩卡槽锁（5×5）：拔掉 1 根门闩，U 槽 + 3 支并行内箭同时连发
+      {
+        bw: 5,
+        bh: 5,
+        groups: [
+          [[0, 3], [0, 2], [0, 1], [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [4, 1], [4, 2], [4, 3]],
+          [[1, 1], [1, 2], [1, 3]],
+          [[2, 1], [2, 2], [2, 3]],
+          [[3, 1], [3, 2], [3, 3]],
+          [[4, 4], [3, 4], [2, 4], [1, 4], [0, 4]],
+        ],
+      },
+      // (2) 双钩太极互锁（5×5）：4 段逐层剥离
+      {
+        bw: 5,
+        bh: 5,
+        groups: [
+          [[2, 4], [1, 4], [0, 4], [0, 3], [0, 2], [0, 1], [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [4, 1], [4, 2], [4, 3]],
+          [[2, 2], [2, 1], [1, 1], [1, 2], [1, 3], [2, 3], [3, 3]],
+          [[3, 1], [3, 2]],
+          [[3, 4], [4, 4]],
+        ],
+      },
+      // (3) 回字双层嵌套锁（6×6）：外门闩 → 15 格回字外墙 → 11 格中钩 + 内芯
+      {
+        bw: 6,
+        bh: 6,
+        groups: [
+          [[0, 5], [0, 4], [0, 3], [0, 2], [0, 1], [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [5, 1], [5, 2], [5, 3], [5, 4]],
+          [[4, 2], [4, 1], [3, 1], [2, 1], [1, 1], [1, 2], [1, 3], [1, 4], [2, 4], [3, 4], [4, 4]],
+          [[2, 2], [3, 2]],
+          [[2, 3], [3, 3], [4, 3]],
+          [[1, 5], [2, 5], [3, 5], [4, 5], [5, 5]],
+        ],
+      },
+    ];
+
+    // 按棋盘分区生成候选锚点，确保多把锁均匀分散而非堆在一起。
+    const sectorsX = this.w >= 28 ? 3 : 2;
+    const sectorsY = this.h >= 38 ? 4 : this.h >= 28 ? 3 : 2;
+    const slots: { sx: number; sy: number }[] = [];
+    for (let gy = 0; gy < sectorsY; gy++) {
+      for (let gx = 0; gx < sectorsX; gx++) {
+        slots.push({ sx: gx, sy: gy });
+      }
+    }
+    for (let i = slots.length - 1; i > 0; i--) {
+      const j = this.rng.int(i + 1);
+      [slots[i], slots[j]] = [slots[j], slots[i]];
+    }
+
+    const placedCenters: Cell[] = [];
+    let locksPlaced = 0;
+    const targetLocks = Math.max(1, lockCount);
+    const maxAttempts = targetLocks * 10 + 12;
+
+    for (let att = 0; att < maxAttempts && locksPlaced < targetLocks; att++) {
+      const motifIdx = (att < 4 ? att : this.rng.int(LOCK_MOTIFS.length)) % LOCK_MOTIFS.length;
+      const motif = LOCK_MOTIFS[motifIdx];
+      const slot = slots[att % slots.length];
+      const cellW = Math.max(1, Math.floor((this.w - 4) / sectorsX));
+      const cellH = Math.max(1, Math.floor((this.h - 4) / sectorsY));
+      const ax = Math.max(2, Math.min(this.w - motif.bw - 2, 2 + slot.sx * cellW + this.rng.int(Math.max(1, cellW - 2))));
+      const ay = Math.max(2, Math.min(this.h - motif.bh - 2, 2 + slot.sy * cellH + this.rng.int(Math.max(1, cellH - 2))));
+
+      const cx = ax + motif.bw / 2;
+      const cy = ay + motif.bh / 2;
+      if (placedCenters.some((p) => Math.hypot(p.x - cx, p.y - cy) < 5.2)) continue;
+
+      const rotBase = this.rng.int(4);
+      const flip = this.rng.next() < 0.5;
+      let committed = false;
+      for (let r = 0; r < 4; r++) {
+        if (this.tryCommitLockCluster(ax, ay, motif.bw, motif.bh, (rotBase + r) & 3, flip, motif.groups) > 0) {
+          placedCenters.push({ x: cx, y: cy });
+          locksPlaced++;
+          committed = true;
+          break;
+        }
+      }
+      void committed;
     }
   }
 
@@ -1009,11 +1171,14 @@ class Master {
     const attempts = [220, 200, 360, 420, 400].map((n) => Math.max(30, Math.round(n * Math.min(1.6, Math.max(0.5, areaK)))));
     const giantMax = Math.max(1, Math.round(3 * Math.min(1.8, Math.max(0.6, areaK))));
     const midMax = Math.max(2, Math.round(5 * Math.min(1.8, Math.max(0.6, areaK))));
+    const defaultLocks = Math.max(2, Math.min(7, Math.round((this.w * this.h) / 220)));
 
-    this.placeFixedStructures(spec.withBoss !== false);
+    this.placeFixedStructures(spec.withBoss !== false, spec.lockCount ?? defaultLocks);
 
-    this.growLayer(40, 65, attempts[0], false, giantMax);
-    this.growLayer(20, 36, attempts[1], false, midMax);
+    const [gMin, gMax] = spec.giantScale ?? [40, 65];
+    const [mMin, mMax] = spec.midScale ?? [20, 36];
+    this.growLayer(gMin, gMax, attempts[0], false, giantMax);
+    this.growLayer(mMin, mMax, attempts[1], false, midMax);
     this.growLayer(8, 16, attempts[2], false);
     this.growLayer(4, 9, attempts[3], true);
     this.growLayer(3, 6, attempts[4], true);
@@ -1279,7 +1444,9 @@ class Master {
     const jumpBonus = Math.min(6, Math.round(m.avgJumpDist * 0.5));
     const decBonus = Math.min(5, Math.round(m.deceptiveClearCount * 0.8));
     // 标定适配：可动惩罚 ×5→×2.2、基线 5→8（大盘 3-pass 漏斗压不到 1 时仍可得分）。
-    const topoScore = Math.max(0, Math.min(25, 8 + singleBonus + jumpBonus + decBonus - Math.max(0, (initialMovableCount - 1) * 2.2)));
+    const topoScore = Math.round(
+      Math.max(0, Math.min(25, 8 + singleBonus + jumpBonus + decBonus - Math.max(0, (initialMovableCount - 1) * 2.2))),
+    );
 
     // 标定适配：惩罚按填充率计（≥99% 不罚，封顶 30），而非绝对空格数。
     const fillRate = 1 - emptyCells / Math.max(1, area);

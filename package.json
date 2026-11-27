@@ -7,17 +7,16 @@
   },
   "description": "Arrow Clear - a satisfying arrow unblocking puzzle",
   "scripts": {
-    "web": "node web/build.mjs --serve",
-    "build:web": "node web/build.mjs",
-    "check": "tsc -p tsconfig.web.json --noEmit",
+    "check": "tsc -p tsconfig.cocos.json",
     "check:cocos": "tsc -p tsconfig.cocos.json",
     "test:levels": "esbuild tools/check-levels.ts --bundle --platform=node --format=esm --outfile=.tmp/check.mjs --log-level=warning && node .tmp/check.mjs",
     "score:levels": "esbuild tools/score-levels.ts --bundle --platform=node --format=esm --outfile=.tmp/score.mjs --log-level=warning && node .tmp/score.mjs",
-    "assets": "python3 tools/gen_assets.py && node tools/render-assets.mjs && python3 tools/subset_font.py",
+    "playtest": "esbuild tools/playtest.ts --bundle --platform=node --format=esm --outfile=.tmp/playtest.mjs --log-level=warning && node .tmp/playtest.mjs",
+    "playtest:apply": "esbuild tools/playtest.ts --bundle --platform=node --format=esm --outfile=.tmp/playtest.mjs --log-level=warning && node .tmp/playtest.mjs --apply",
+    "assets": "node tools/render-assets.mjs && python3 tools/gen_assets.py && python3 tools/subset_font.py",
     "test:core": "esbuild tests/core.test.ts --bundle --platform=node --format=esm --outfile=.tmp/core.test.mjs --log-level=warning && node .tmp/core.test.mjs",
-    "test:e2e": "node web/build.mjs && node tests/e2e.mjs",
-    "test:project": "node web/build.mjs && node tests/validate-project.mjs",
-    "test": "npm run check && npm run check:cocos && npm run test:core && npm run test:e2e && npm run test:project"
+    "test:project": "node tests/validate-project.mjs",
+    "test": "npm run check:cocos && npm run test:core && npm run test:project"
   },
   "devDependencies": {
     "@cocos/creator-types": "^3.8.6",

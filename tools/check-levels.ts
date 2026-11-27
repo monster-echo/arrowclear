@@ -1,11 +1,11 @@
-import { solveGreedyFrozen } from '../assets/scripts/core/frozen';
-import { freeAtStartCount } from '../assets/scripts/core/frozen';
 import {
   LEVEL_COUNT,
   getLevelParts,
   isChallenge,
   getLevel,
   levelMode,
+  solveGreedy,
+  freeAtStartCount,
 } from '../assets/scripts/core/levels';
 
 let failures = 0;
@@ -17,7 +17,7 @@ for (let id = 1; id <= LEVEL_COUNT; id++) {
   const parts = getLevelParts(id);
   parts.forEach((level, i) => {
     const label = parts.length > 1 ? `${id}(${level.part ?? i + 1}/3)` : String(id);
-    const solved = solveGreedyFrozen(level);
+    const solved = solveGreedy(level);
     if (!solved.solved) {
       failures++;
       console.error(`level ${label} is NOT solvable`);
@@ -27,7 +27,6 @@ for (let id = 1; id <= LEVEL_COUNT; id++) {
       failures++;
       console.error(`level ${label} has no free arrow at start`);
     }
-    const frozen = level.arrows.filter((a) => a.frozen).length;
     const cells = level.arrows.reduce((n, a) => n + a.cells.length, 0);
     const maskArea = level.mask
       ? level.mask.reduce((a, b) => a + b, 0)
@@ -41,7 +40,6 @@ for (let id = 1; id <= LEVEL_COUNT; id++) {
         `arrows=${String(level.arrows.length).padStart(3)}`,
         `fill=${((cells / Math.max(1, maskArea)) * 100).toFixed(0)}%`,
         `free=${String(free).padStart(2)}`,
-        `frozen=${String(frozen).padStart(3)}`,
         `time=${level.timeLimit}s`,
       ].join('  '),
     );
@@ -53,7 +51,7 @@ console.log(
 );
 // Bonus challenge level must also stay solvable.
 const bonus = getLevel(isChallenge(0) ? 0 : 501);
-if (!solveGreedyFrozen(bonus).solved) {
+if (!solveGreedy(bonus).solved) {
   failures++;
   console.error('bonus challenge level is NOT solvable');
 }

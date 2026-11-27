@@ -91,7 +91,7 @@ const cameraNode = canvasChildren.find((n) => n._name === 'Camera');
 const cameraComp = cameraNode?._components?.map((r) => scene[r.__id__]).find((c) => c.__type__ === 'cc.Camera');
 check(!!cameraComp, 'Camera node has cc.Camera');
 check(canvasComp?._cameraComponent?.__id__ === scene.indexOf(cameraComp), 'Canvas references the camera', String(canvasComp?._cameraComponent?.__id__));
-check(cameraComp?._projection === 1, 'camera is orthographic');
+check(cameraComp?._projection === 0, 'camera is orthographic');
 check(((cameraComp?._visibility ?? 0) & (1 << 25)) !== 0, 'camera renders UI_2D layer');
 check(canvas?._layer === 1 << 25, 'Canvas node is on UI_2D layer', String(canvas?._layer));
 
@@ -99,11 +99,26 @@ const gameRootNode = canvasChildren.find((n) => n._name === 'GameRoot');
 const gameRootComps = gameRootNode?._components?.map((r) => scene[r.__id__]) ?? [];
 check(gameRootNode?._layer === 1 << 25, 'GameRoot node is on UI_2D layer');
 
+const BASE64_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function compressUuid(uuid) {
+  const hex = uuid.replace(/-/g, '');
+  let out = hex.slice(0, 5);
+  for (let i = 5; i < 32; i += 3) {
+    const a = parseInt(hex[i], 16);
+    const b = parseInt(hex[i + 1], 16);
+    const c = parseInt(hex[i + 2], 16);
+    out += BASE64_KEYS[(a << 2) | (b >> 2)];
+    out += BASE64_KEYS[((b & 3) << 4) | c];
+  }
+  return out;
+}
+
 const scriptMeta = await readJson('assets/scripts/cocos/GameRoot.ts.meta');
-const scriptComp = gameRootComps.find((c) => c.__type__ === scriptMeta.uuid);
-check(!!scriptComp, 'GameRoot component uses the script UUID from its .meta', scriptMeta.uuid);
+const scriptCompressedUuid = compressUuid(scriptMeta.uuid);
+const scriptComp = gameRootComps.find((c) => c.__type__ === scriptCompressedUuid);
+check(!!scriptComp, 'GameRoot component uses the compressed script UUID from its .meta', scriptCompressedUuid);
 check(scriptComp?.node?.__id__ === scene.indexOf(gameRootNode), 'GameRoot component points at the GameRoot node');
-check(scene.filter((o) => o.__type__ === scriptMeta.uuid).length === 1, 'exactly one GameRoot component in the scene');
+check(scene.filter((o) => o.__type__ === scriptCompressedUuid).length === 1, 'exactly one GameRoot component in the scene');
 
 const sceneMeta = await readJson('assets/scenes/main.scene.meta');
 check(sceneMeta.importer === 'scene', 'scene .meta importer is scene');
@@ -197,6 +212,12 @@ async function pngSize(rel) {
 
 const icon = await pngSize('assets/resources/art/icons/coin.png');
 check(icon?.w === 128 && icon?.h === 128, 'icons are 128×128', icon ? `${icon.w}×${icon.h}` : 'invalid');
+let tinyIcons = [];
+for (const n of icons) {
+  const st = await stat(path.join(ROOT, `assets/resources/art/icons/${n}.png`));
+  if (st.size < 500) tinyIcons.push(`${n}(${st.size}B)`);
+}
+check(tinyIcons.length === 0, 'all icons are non-empty graphics', tinyIcons.join(','));
 const logo = await pngSize('assets/resources/art/logo.png');
 check(logo && logo.w >= 900, 'logo is high-res', logo ? `${logo.w}×${logo.h}` : 'invalid');
 const mascot = await pngSize('assets/resources/art/mascot.png');
@@ -226,17 +247,6 @@ for (const f of coreFiles.filter((f) => f.endsWith('.ts'))) {
 }
 check(ccImports === 0, 'core has no Cocos imports', `${coreFiles.length} files`);
 check(coreFiles.some((f) => f === 'levelgen.ts'), 'level generator present');
-
-// ---------------------------------------------------------------- web build
-
-console.log('\n[web] static build');
-const distIndex = await readFile(path.join(ROOT, 'dist/web/index.html'), 'utf8');
-check(!distIndex.includes('http://') && !distIndex.includes('https://'), 'index.html has no external URLs');
-check(distIndex.includes('./main.js'), 'index.html loads bundled js');
-check(await exists('dist/web/fonts/ZCOOLKuaiLe-Regular.ttf'), 'bundled font present');
-const js = await readFile(path.join(ROOT, 'dist/web/main.js'), 'utf8');
-check(!js.includes('localhost:4173'), 'bundle has no dev-server references');
-check(js.length > 20000, 'bundle non-trivial', `${Math.round(js.length / 1024)}KB`);
 
 console.log(`\n${results.filter((r) => r.ok).length} checks passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -12,8 +12,8 @@ import {
   stepOf,
   worldOf,
 } from '../assets/scripts/core/levels';
+import { freeAtStartCount } from '../assets/scripts/core/levelgen';
 import { MasterReport } from '../assets/scripts/core/arrowscore';
-import { freeAtStartCount } from '../assets/scripts/core/frozen';
 import { Level } from '../assets/scripts/core/types';
 
 type LevelWithReport = Level & { report?: MasterReport };
@@ -52,7 +52,6 @@ function rowFor(level: LevelWithReport, label: string, kind: string): Record<str
     knots: r ? r.interlockingKnotCount : -1,
     initialMovable: r ? r.initialMovable : -1,
     liveMovable: freeAtStartCount(level),
-    frozen: level.arrows.filter((a) => a.frozen).length,
     boss: level.arrows.some((a) => a.isBoss) ? 1 : 0,
     empty: r ? r.emptyCells : -1,
     fillRate: r ? 1 - r.emptyCells / Math.max(1, maskArea) : cells / Math.max(1, maskArea),

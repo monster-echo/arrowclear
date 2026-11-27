@@ -422,6 +422,24 @@ export function solveGreedy(level: Level): { solved: boolean; order: number[] } 
   return { solved: alive.size === 0, order };
 }
 
+/** 开局可飞的箭数（航道无任何阻挡的箭）。 */
+export function freeAtStartCount(level: Level): number {
+  const occ = new Map<number, number>();
+  for (const a of level.arrows) {
+    for (const c of a.cells) occ.set(cellKey(c), a.id);
+    for (const c of bossShadowCells(level, a)) occ.set(cellKey(c), a.id);
+  }
+  let free = 0;
+  for (const a of level.arrows) {
+    if (
+      canArrowEscape(level, a, (c) => occ.get(cellKey(c)) !== undefined && occ.get(cellKey(c)) !== a.id)
+    ) {
+      free++;
+    }
+  }
+  return free;
+}
+
 export function generateLevel(opts: GenOptions): Level {
   // Picture levels are tiled completely: every mask cell belongs to an arrow.
   // The peel generator constructs a removal chain from the outside in.

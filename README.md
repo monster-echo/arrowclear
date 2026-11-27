@@ -15,9 +15,8 @@
 | --- | --- | --- |
 | Cocos Creator 3.8.6 工程 | `assets/` `project.json` | iOS / Android / 微信小游戏三端共用 |
 | 纯 TS 玩法内核 | `assets/scripts/core/` | 关卡生成、可解性校验、规则、存档，零引擎依赖 |
-| Cocos 表现层 | `assets/scripts/cocos/` | 场景、棋盘绘制、UI、动效、音效 |
-| 可玩 Web 预览 | `web/` → `dist/web/` | 与 Cocos 共用同一套内核，用于快速验证手感与画面 |
-| 美术 / 音频资源 | `assets/resources/` | 全部由脚本生成，可复现 |
+| Cocos 表现层 | `assets/scripts/cocos/` | 欧美精品休闲风场景、棋盘绘制、3D UI、粒子动效、音效 |
+| 美术 / 音频资源 | `assets/resources/` | 全部由脚本生成，可复现（`npm run assets`） |
 | 上架文档 | `docs/` | iOS、Google Play、微信小游戏完整流程 |
 | 商店素材 | `store/` | 6.9" / 6.7" 截图、Google Play 特色图、1024 图标 |
 
@@ -25,23 +24,7 @@
 
 ## 快速开始
 
-### 1. Web 预览（不用装 Cocos，30 秒看效果）
-
-```bash
-cd ArrowClear
-npm install
-npm run web          # 打开 http://localhost:4173
-```
-
-打包成静态站点：
-
-```bash
-npm run build:web    # 输出 dist/web
-```
-
-`dist/web` 可以直接丢到任意静态服务器 / CDN，也可作为商店演示链接。
-
-### 2. Cocos Creator
+### 1. Cocos Creator
 
 1. 安装 **Cocos Creator 3.8.6**（Dashboard 里选 3.8.6，不要用 2.x）。
 2. Dashboard → 项目 → 添加 → 选择本目录 `ArrowClear`。
@@ -51,21 +34,20 @@ npm run build:web    # 输出 dist/web
 > 设计分辨率 720×1280，竖屏，`FIXED_WIDTH`。代码里也会强制设置一次，所以换机型不会错位。
 > 如果场景打不开，见 [docs/01-快速开始.md](docs/01-快速开始.md) 的兜底方案（30 秒重建场景）。
 
-### 3. 校验
+### 2. 校验与资源生成
 
 ```bash
-npm test               # 类型检查 + 3 套测试（1896 项断言，约 3 分钟）
+npm test               # Cocos 类型检查 + 核心单测 + Cocos 工程静态校验
+npm run assets         # 重新生成欧美休闲风美术 PNG 资源并重新子集化字体
 ```
 
 单独运行：
 
 ```bash
-npm run check            # Web + 核心 TypeScript
-npm run check:cocos      # Cocos 脚本按官方引擎类型检查
-npm run test:core        # 核心规则单测（1820 项：500 关结构 / 冰冻箭 / 体力等）
-npm run test:e2e         # 真实 Chrome 端到端（30 项，含激励广告与 5 关实打通关）
-npm run test:project     # Cocos 工程静态校验（46 项）
-npm run test:levels      # 500 关全量生成 + 可解性校验（含 Boss 三连打部件，约 3 分钟）
+npm run check:cocos    # Cocos 脚本按官方引擎类型检查
+npm run test:core      # 核心规则单测（500 关结构 / 冰冻箭 / 体力等）
+npm run test:project   # Cocos 工程静态校验（场景图、UUID、资源与字体）
+npm run test:levels    # 500 关全量生成 + 可解性校验（含 Boss 三连打部件，约 3 分钟）
 ```
 
 ---

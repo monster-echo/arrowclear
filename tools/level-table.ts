@@ -14,7 +14,6 @@ import {
   worldOf,
 } from '../assets/scripts/core/levels';
 import { MasterReport } from '../assets/scripts/core/arrowscore';
-import { freeAtStartCount } from '../assets/scripts/core/frozen';
 import { Level } from '../assets/scripts/core/types';
 
 type LevelWithReport = Level & { report?: MasterReport };
@@ -32,7 +31,6 @@ interface Row {
   score: number;
   tier: string;
   movable: number;
-  frozen: number;
   empty: number;
   time: number;
   /** 五维拆分：箭量丰度/形态跨度/反斑马/回字包络/拓扑向心。 */
@@ -57,7 +55,6 @@ function rowFor(level: LevelWithReport, label: string): Row {
     score: report ? report.totalScore : -1,
     tier: report ? report.difficultyTier : '--',
     movable: freeAtStartCount(level),
-    frozen: level.arrows.filter((a) => a.frozen).length,
     empty: report ? report.emptyCells : -1,
     time: level.timeLimit,
     subs: report
@@ -115,7 +112,7 @@ const head = `# 11 · 全关卡指标总表
 > **达标线**（硬门禁，低于此分自动换种子重摇）：大盘 70 / 中盘 68 / 小盘 60。
 >
 > - **链深** = 拓扑剥洋葱层数（解开整盘所需的波数，越深越烧脑）
-> - **可释放** = 开局即可点击飞出的箭数（冻结箭不计，Boss 可飞则计）
+> - **可释放** = 开局即可点击飞出的箭数（Boss 可飞则计）
 > - **密度** = 箭数 / 可放格数
 >
 > 总计 ${rows.length} 个盘面（主线 500 关 + Boss 三连打部件 + 彩蛋 501）。
@@ -136,12 +133,12 @@ ${worst10.map((r) => `| ${r.label} | ${r.score} | ${r.tier.slice(0, 1)} | ${r.de
 `;
 
 const lines: string[] = [
-  '| 关 | 章 | 模式 | 形态 | 盘面 | 箭数 | 密度 | 链深 | 评分 | 达标线 | 达标 | 等级 | 五维(量/跨/斑/腔/拓) | 可释放 | 冻结 | 空格 | 限时 |',
+  '| 关 | 章 | 模式 | 形态 | 盘面 | 箭数 | 密度 | 链深 | 评分 | 达标线 | 达标 | 等级 | 五维(量/跨/斑/腔/拓) | 可释放 | 空格 | 限时 |',
   '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
 ];
 for (const r of rows) {
   lines.push(
-    `| ${r.label} | ${r.chapter} | ${r.mode} | ${r.shape} | ${r.board} | ${r.arrows} | ${r.density.toFixed(3)} | ${r.depth} | ${r.score} | ${r.gate} | ${r.passes ? '✓' : '✗'} | ${r.tier.slice(0, 1)} | ${r.subs} | ${r.movable} | ${r.frozen} | ${r.empty} | ${r.time === 0 ? '∞' : `${r.time}s`} |`,
+    `| ${r.label} | ${r.chapter} | ${r.mode} | ${r.shape} | ${r.board} | ${r.arrows} | ${r.density.toFixed(3)} | ${r.depth} | ${r.score} | ${r.gate} | ${r.passes ? '✓' : '✗'} | ${r.tier.slice(0, 1)} | ${r.subs} | ${r.movable} | ${r.empty} | ${r.time === 0 ? '∞' : `${r.time}s`} |`,
   );
 }
 
